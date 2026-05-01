@@ -595,6 +595,22 @@ def _radio_keys(channel: str) -> tuple[str, str | None, Callable[[Any], Any], Ca
     raise ValueError(f"Unsupported radio channel: {channel}")
 
 
+TCAS_MODE_LABELS = {0: "ta_ra", 1: "ta", 2: "stby", 3: "test"}
+TCAS_MODE_VALUES = {"tara": 0, "ta_ra": 0, "ta/ra": 0, "ta-ra": 0, "ta": 1, "stby": 2, "standby": 2, "test": 3}
+
+
+def _tcas_mode_value(value: Any) -> int:
+    if isinstance(value, str):
+        key = value.strip().lower()
+        if key not in TCAS_MODE_VALUES:
+            raise ValueError(f"Unsupported TCAS mode: {value}")
+        return TCAS_MODE_VALUES[key]
+    raw = int(value)
+    if raw not in TCAS_MODE_LABELS:
+        raise ValueError("TCAS mode numeric value must be 0, 1, 2, or 3")
+    return raw
+
+
 def _read_map(mapping: dict[str, str]) -> dict[str, Any]:
     return {key: XP.read(name) for key, name in mapping.items()}
 
@@ -909,12 +925,12 @@ def read_atc() -> dict[str, Any]:
     d = _read_map(READ_DREFS["atc"])
     code = "".join(str(int(_num(d[f"xpdr{i}"]) or 0)) for i in range(1, 5))
     mode_raw = int(_num(d["xpdr_mode"]) or 0)
-    tcas_mode_raw = int(_num(_read_std("tcas_mode")) or 0)
+    tcas_mode_raw = int(_num(d["xpdr_mode"]) or 0)
     tcas_filter_raw = int(_num(_read_std("tcas_filter")) or 0)
     return {
         "xpdr": {"code": code, "mode": {0: "stby", 1: "auto", 2: "on"}.get(mode_raw, str(mode_raw)), "ident": None},
         "tcas": {
-            "mode": {0: "tara", 1: "ta", 2: "stby", 3: "test"}.get(tcas_mode_raw, str(tcas_mode_raw)),
+            "mode": TCAS_MODE_LABELS.get(tcas_mode_raw, str(tcas_mode_raw)),
             "range": d["tcas_range_capt"],
             "filter": {0: "all", 1: "abv", 2: "blw", 3: "n"}.get(tcas_filter_raw, str(tcas_filter_raw)),
             "status": d["tcas_status"],
@@ -1657,8 +1673,16 @@ def set_atc(name: Literal["code", "mode", "ident", "tcas_mode", "tcas_range", "t
         return _write_result(read_atc, lambda: [XP.write(d, int(v)) for d, v in zip(drefs, code)], drefs)
     if name in {"mode", "tcas_mode"}:
         if name == "tcas_mode":
-            val = {"tara": 0, "ta": 1, "stby": 2, "test": 3}.get(str(value), value)
-            dref = STANDARD_DREFS["tcas_mode"]
+            val = _tcas_mode_value(value)
+            dref = WRITE_DREFS["xpdr_mode"]
+            target = TCAS_MODE_LABELS[val]
+            before = read_atc()
+            if before["tcas"]["mode"] == target:
+                return _noop_success(before)
+            XP.write(dref, val)
+            time.sleep(0.15)
+            after = read_atc()
+            return {"success": after["tcas"]["mode"] == target, "before": before, "after": after, "dataref_used": [dref], "command_used": []}
         else:
             val = {"stby": 0, "auto": 1, "on": 2}.get(str(value), value)
             dref = WRITE_DREFS["xpdr_mode"]
