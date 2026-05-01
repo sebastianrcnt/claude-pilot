@@ -632,8 +632,26 @@ def _radio_keys(channel: str) -> tuple[str, str | None, Callable[[Any], Any], Ca
     raise ValueError(f"Unsupported radio channel: {channel}")
 
 
-TCAS_MODE_LABELS = {0: "ta_ra", 1: "ta", 2: "stby", 3: "test"}
-TCAS_MODE_VALUES = {"tara": 0, "ta_ra": 0, "ta/ra": 0, "ta-ra": 0, "ta": 1, "stby": 2, "standby": 2, "test": 3}
+XPDR_TCAS_POSITION_LABELS = {0: "stby", 1: "xpdr", 2: "ta_only", 3: "ta_ra"}
+XPDR_TCAS_POSITION_VALUES = {
+    "stby": 0,
+    "standby": 0,
+    "off": 0,
+    "xpdr": 1,
+    "transponder": 1,
+    "on": 1,
+    "auto": 1,
+    "ta": 2,
+    "ta_only": 2,
+    "ta-only": 2,
+    "ta only": 2,
+    "tara": 3,
+    "ta_ra": 3,
+    "ta/ra": 3,
+    "ta-ra": 3,
+}
+TCAS_MODE_LABELS = {0: "off", 1: "off", 2: "ta_only", 3: "ta_ra"}
+TCAS_MODE_VALUES = {"off": 1, "xpdr": 1, "ta": 2, "ta_only": 2, "ta-only": 2, "ta only": 2, "tara": 3, "ta_ra": 3, "ta/ra": 3, "ta-ra": 3, "stby": 0, "standby": 0}
 
 
 def _tcas_mode_value(value: Any) -> int:
@@ -645,6 +663,18 @@ def _tcas_mode_value(value: Any) -> int:
     raw = int(value)
     if raw not in TCAS_MODE_LABELS:
         raise ValueError("TCAS mode numeric value must be 0, 1, 2, or 3")
+    return raw
+
+
+def _xpdr_tcas_position_value(value: Any) -> int:
+    if isinstance(value, str):
+        key = value.strip().lower()
+        if key not in XPDR_TCAS_POSITION_VALUES:
+            raise ValueError(f"Unsupported XPDR/TCAS rotary position: {value}")
+        return XPDR_TCAS_POSITION_VALUES[key]
+    raw = int(value)
+    if raw not in XPDR_TCAS_POSITION_LABELS:
+        raise ValueError("XPDR/TCAS rotary numeric value must be 0, 1, 2, or 3")
     return raw
 
 
@@ -1442,16 +1472,17 @@ def read_radios() -> dict[str, Any]:
 
 @mcp.tool
 def read_atc() -> dict[str, Any]:
-    """Read transponder and TCAS. Units: squawk digits, selector integers. Returns xpdr and tcas. Example: {'xpdr': {'code': '2200', 'mode': 'auto'}}."""
+    """Read transponder and TCAS. Units: squawk digits, selector integers. ToLiss XPDR and TCAS share one physical rotary dataref: 0=stby, 1=xpdr, 2=ta_only, 3=ta_ra. Returns xpdr, tcas, and xpdr_tcas combined rotary state. Example: {'xpdr_tcas': {'position': 'ta_ra'}}."""
     d = _read_map(READ_DREFS["atc"])
     code = "".join(str(int(_num(d[f"xpdr{i}"]) or 0)) for i in range(1, 5))
     mode_raw = int(_num(d["xpdr_mode"]) or 0)
-    tcas_mode_raw = int(_num(d["xpdr_mode"]) or 0)
     tcas_filter_raw = int(_num(_read_std("tcas_filter")) or 0)
+    xpdr_active = mode_raw > 0
     return {
-        "xpdr": {"code": code, "mode": {0: "stby", 1: "auto", 2: "on"}.get(mode_raw, str(mode_raw)), "ident": None},
+        "xpdr": {"code": code, "mode": "auto" if xpdr_active else "stby", "ident": None},
+        "xpdr_tcas": {"position": XPDR_TCAS_POSITION_LABELS.get(mode_raw, str(mode_raw)), "raw": mode_raw},
         "tcas": {
-            "mode": TCAS_MODE_LABELS.get(tcas_mode_raw, str(tcas_mode_raw)),
+            "mode": TCAS_MODE_LABELS.get(mode_raw, str(mode_raw)),
             "range": d["tcas_range_capt"],
             "filter": {0: "all", 1: "abv", 2: "blw", 3: "n"}.get(tcas_filter_raw, str(tcas_filter_raw)),
             "status": d["tcas_status"],
@@ -1714,8 +1745,8 @@ def set_acp(side: Literal["capt", "fo"], action: Literal["select_rx", "toggle_tx
 
 
 @mcp.tool
-def set_atc(name: Literal["code", "mode", "ident", "tcas_mode", "tcas_range", "tcas_filter", "alt_rptg"], value: Any) -> dict[str, Any]:
-    """Set ATC/TCAS. name code/mode/ident/tcas_mode/tcas_range/tcas_filter/alt_rptg. code is four digits, mode stby/auto/on, ident triggers ident. Returns success,before,after,dataref_used. Example: set_atc('code','2200')."""
+def set_atc(name: Literal["code", "mode", "xpdr_tcas", "tcas_mode", "ident", "tcas_range", "tcas_filter", "alt_rptg"], value: Any) -> dict[str, Any]:
+    """Set ATC/TCAS. name code/mode/xpdr_tcas/tcas_mode/tcas_range/tcas_filter/alt_rptg. ToLiss XPDR and TCAS share one physical rotary dataref: xpdr_tcas accepts stby/xpdr/ta_only/ta_ra. Compatibility mode=auto/on ensures transponder is at least XPDR without downgrading TA ONLY or TA/RA; tcas_mode=ta_only/ta_ra sets the shared rotary directly. Returns success,before,after,dataref_used. Example: set_atc('xpdr_tcas','ta_ra')."""
     if name == "ident":
         cmd = _known("sim/transponder/transponder_ident")
         return _write_result(read_atc, lambda: XP.command(cmd), [cmd])
@@ -1723,22 +1754,50 @@ def set_atc(name: Literal["code", "mode", "ident", "tcas_mode", "tcas_range", "t
         code = str(value).zfill(4)
         drefs = [_known(f"AirbusFBW/XPDR{i}") for i in range(1, 5)]
         return _write_result(read_atc, lambda: [XP.write(d, int(v)) for d, v in zip(drefs, code)], drefs)
-    if name in {"mode", "tcas_mode"}:
-        if name == "tcas_mode":
-            val = _tcas_mode_value(value)
-            dref = WRITE_DREFS["xpdr_mode"]
-            target = TCAS_MODE_LABELS[val]
-            before = read_atc()
-            if before["tcas"]["mode"] == target:
-                return _noop_success(before)
-            XP.write(dref, val)
-            time.sleep(0.15)
-            after = read_atc()
-            return {"success": after["tcas"]["mode"] == target, "before": before, "after": after, "dataref_used": [dref], "command_used": []}
+    if name == "xpdr_tcas":
+        val = _xpdr_tcas_position_value(value)
+        dref = WRITE_DREFS["xpdr_mode"]
+        target = XPDR_TCAS_POSITION_LABELS[val]
+        before = read_atc()
+        if before["xpdr_tcas"]["position"] == target:
+            return _noop_success(before)
+        XP.write(dref, val)
+        DATAREF_VALUE_CACHE.clear()
+        time.sleep(0.15)
+        after = read_atc()
+        return {"success": after["xpdr_tcas"]["position"] == target, "before": before, "after": after, "dataref_used": [dref], "command_used": []}
+    if name == "tcas_mode":
+        val = _tcas_mode_value(value)
+        dref = WRITE_DREFS["xpdr_mode"]
+        target = TCAS_MODE_LABELS[val]
+        before = read_atc()
+        if before["tcas"]["mode"] == target and before["xpdr_tcas"]["raw"] == val:
+            return _noop_success(before)
+        XP.write(dref, val)
+        DATAREF_VALUE_CACHE.clear()
+        time.sleep(0.15)
+        after = read_atc()
+        return {"success": after["tcas"]["mode"] == target and after["xpdr_tcas"]["raw"] == val, "before": before, "after": after, "dataref_used": [dref], "command_used": []}
+    if name == "mode":
+        dref = WRITE_DREFS["xpdr_mode"]
+        before = read_atc()
+        mode = str(value).strip().lower()
+        if mode in {"stby", "standby", "off"}:
+            val = 0
+        elif mode in {"auto", "on", "xpdr", "transponder"}:
+            # Preserve TA ONLY/TA/RA if already selected; those positions also
+            # keep the transponder active on the same physical ToLiss rotary.
+            val = max(1, int(before["xpdr_tcas"]["raw"]))
         else:
-            val = {"stby": 0, "auto": 1, "on": 2}.get(str(value), value)
-            dref = WRITE_DREFS["xpdr_mode"]
-        return _write_result(read_atc, lambda: XP.write(dref, val), [dref])
+            val = _xpdr_tcas_position_value(value)
+        target_active = val > 0
+        if before["xpdr"]["mode"] == ("auto" if target_active else "stby") and before["xpdr_tcas"]["raw"] == val:
+            return _noop_success(before)
+        XP.write(dref, val)
+        DATAREF_VALUE_CACHE.clear()
+        time.sleep(0.15)
+        after = read_atc()
+        return {"success": after["xpdr_tcas"]["raw"] == val, "before": before, "after": after, "dataref_used": [dref], "command_used": []}
     if name == "tcas_filter":
         val = {"all": 0, "abv": 1, "blw": 2, "n": 3}.get(str(value), value)
         dref = STANDARD_DREFS["tcas_filter"]
