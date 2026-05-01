@@ -95,7 +95,11 @@ STANDARD_DREFS: dict[str, str] = {
     "tcas_filter": "sim/cockpit2/radios/actuators/tcas_filter",
     "instrument_brightness": "sim/cockpit2/electrical/instrument_brightness_ratio",
     "speedbrake_ratio": "sim/cockpit2/controls/speedbrake_ratio",
+    "fcu_airspeed_dial": "sim/cockpit2/autopilot/airspeed_dial_kts_mach",
     "fcu_heading_dial": "sim/cockpit2/autopilot/heading_dial_deg_mag_pilot",
+    "fcu_altitude_dial": "sim/cockpit2/autopilot/altitude_dial_ft",
+    "fcu_vs_dial": "sim/cockpit2/autopilot/vvi_dial_fpm",
+    "fcu_trk_fpa_mode": "sim/cockpit2/autopilot/trk_fpa",
 }
 
 STANDARD_COMMANDS: dict[str, str] = {
@@ -151,6 +155,7 @@ READ_DREFS: dict[str, dict[str, str]] = {
             "hdg_mode": "AirbusFBW/HDGTRKmode",
             "alt_value": "AirbusFBW/FCUALT_M",
             "alt_managed": "AirbusFBW/ALTmanaged",
+            "alt_step": "AirbusFBW/ALT100_1000",
             "vs_value": "AirbusFBW/VS",
             "vs_managed": "AirbusFBW/VSdashed",
             "metric_alt": "AirbusFBW/MetricAlt",
@@ -423,12 +428,7 @@ STATE_COMMANDS: dict[str, dict[str, str]] = {
 WRITE_DREFS = _m(
     {
         "fcu_alt": "AirbusFBW/FCUALT_M",
-        # Verified FCU inputs use knob-rotation datarefs. Do not use
-        # smartCopilotSync datarefs as aircraft control inputs.
-        "fcu_spd_knob": "AirbusFBW/FCUSpeedKnobRotation",
-        "fcu_hdg_knob": "AirbusFBW/FCUHeadingKnobRotation",
-        "fcu_alt_knob": "AirbusFBW/FCUAltKnobRotation",
-        "fcu_vs_knob": "AirbusFBW/FCUVSKnobRotation",
+        # Do not use smartCopilotSync or FCU knob counter datarefs as target-value controls.
         "panel_brightness": "AirbusFBW/PanelBrightnessLevel",
         "flood_brightness": "AirbusFBW/FloodLightLevels",
         "integral_brightness": "AirbusFBW/FCUIntegralBrightness",
@@ -665,12 +665,19 @@ def _decode_fcu_heading(value: Any) -> float | None:
 
 def _read_fcu_heading_value() -> float | None:
     try:
-        return _decode_fcu_heading(XP.read(READ_DREFS["fcu"]["hdg_value"]))
+        return _normalize_heading(float(_num(_read_std("fcu_heading_dial"))))
     except Exception:
         try:
-            return _normalize_heading(float(_num(_read_std("fcu_heading_dial"))))
+            return _decode_fcu_heading(XP.read(READ_DREFS["fcu"]["hdg_value"]))
         except Exception:
             return None
+
+
+def _read_fcu_direct_value(std_key: str, fallback: Any = None) -> float | int | None:
+    try:
+        return _num(_read_std(std_key))
+    except Exception:
+        return _num(fallback)
 
 
 def _shortest_heading_delta(current: float, target: float) -> float:
@@ -698,66 +705,79 @@ def _fcu_numeric_disabled(channel: str) -> MappingError:
     )
 
 
-def _write_fcu_knob_delta(dref: str, delta_clicks: int) -> tuple[int, int]:
-    """Advance a ToLiss FCU knob counter by signed clicks, wrapping 0..19."""
-    DATAREF_VALUE_CACHE.pop(dref, None)
-    current = _num(XP.read(dref))
-    if current is None:
-        raise MappingError(f"FCU knob dataref did not return a numeric counter: {dref}")
-    knob_current = int(round(float(current))) % 20
-    knob_next = (knob_current + int(delta_clicks)) % 20
-    if knob_next != knob_current:
-        XP.write(dref, knob_next)
-        DATAREF_VALUE_CACHE.clear()
-    return knob_current, knob_next
+def _fcu_direct_target(channel: str, current: float, target: float, dial_value: float) -> float:
+    if channel == "hdg":
+        display_offset = _shortest_heading_delta(dial_value, current)
+        return _normalize_heading(target - display_offset)
+    return target - (current - dial_value)
 
 
-def _set_fcu_hdg(target: float, desired_managed: bool) -> dict[str, Any]:
+def _set_fcu_direct(
+    channel: Literal["spd", "hdg", "alt", "vs"],
+    target: float,
+    desired_managed: bool,
+    dial_dref: str,
+    *,
+    normalize: Callable[[float], float] | None = None,
+) -> dict[str, Any]:
     before = read_fcu()
     command_used: list[str] = []
-    target = _normalize_heading(target)
-    current = _num(before["hdg"]["value"])
+    target = normalize(target) if normalize else float(target)
+    current = _num(before[channel]["value"])
     if current is None:
-        raise MappingError("set_fcu('hdg') requires a working FCU heading readback before knob control can be used.")
-    current = _normalize_heading(float(current))
-    if _bool(before["hdg"]["managed"]) != desired_managed:
-        cmd = COMMANDS["hdg_push" if desired_managed else "hdg_pull"]
+        raise MappingError(f"set_fcu('{channel}') requires a working FCU readback before direct control can be used.")
+    current = normalize(float(current)) if normalize else float(current)
+    if _bool(before[channel]["managed"]) != desired_managed:
+        cmd = COMMANDS[f"{channel}_{'push' if desired_managed else 'pull'}"]
         XP.command(cmd)
         command_used.append(cmd)
         time.sleep(0.15)
         before = read_fcu()
-        current = _num(before["hdg"]["value"])
+        current = _num(before[channel]["value"])
         if current is None:
-            raise MappingError("set_fcu('hdg') requires a working FCU heading readback before knob control can be used.")
-        current = _normalize_heading(float(current))
-    if _bool(before["hdg"]["managed"]) == desired_managed and _fcu_value_close("hdg", current, target):
+            raise MappingError(f"set_fcu('{channel}') requires a working FCU readback before direct control can be used.")
+        current = normalize(float(current)) if normalize else float(current)
+    if _bool(before[channel]["managed"]) == desired_managed and _fcu_value_close(channel, current, target):
         return _noop_success(before)
-    heading_dial_dref = STANDARD_DREFS["fcu_heading_dial"]
-    dial_value = _num(XP.read(heading_dial_dref))
-    if dial_value is None:
-        raise MappingError("set_fcu('hdg') requires a working X-Plane FCU heading dial readback.")
-    dial_value = _normalize_heading(float(dial_value))
-    display_offset = _shortest_heading_delta(dial_value, current)
-    dial_target = _normalize_heading(target - display_offset)
-    XP.write(heading_dial_dref, dial_target)
+
+    dial_raw = _num(XP.read(dial_dref))
+    if dial_raw is None:
+        raise MappingError(f"set_fcu('{channel}') requires a working dial dataref: {dial_dref}")
+    dial_value = normalize(float(dial_raw)) if normalize else float(dial_raw)
+    dial_target = _fcu_direct_target(channel, current, target, dial_value)
+    XP.write(dial_dref, dial_target)
+    DATAREF_VALUE_CACHE.clear()
     time.sleep(0.25)
     after = read_fcu()
-    actual = _num(after["hdg"]["value"])
-    actual = None if actual is None else _normalize_heading(float(actual))
-    if _fcu_value_close("hdg", actual, target):
+    actual = _num(after[channel]["value"])
+    actual = None if actual is None else (normalize(float(actual)) if normalize else float(actual))
+    if _fcu_value_close(channel, actual, target):
         result = {
             "success": True,
             "before": before,
             "after": after,
-            "dataref_used": [heading_dial_dref],
+            "dataref_used": [dial_dref],
             "command_used": command_used,
         }
-        result["heading_dial"] = {"before": dial_value, "after": dial_target, "display_offset": display_offset}
+        result["dial"] = {"before": dial_value, "after": dial_target, "display_offset": current - dial_value}
         return result
-    raise MappingError(
-        f"set_fcu('hdg') wrote {dial_target} to {heading_dial_dref} "
-        f"but readback was {actual}, not target {target}."
-    )
+    raise MappingError(f"set_fcu('{channel}') wrote {dial_target} to {dial_dref} but readback was {actual}, not target {target}.")
+
+
+def _set_fcu_hdg(target: float, desired_managed: bool) -> dict[str, Any]:
+    return _set_fcu_direct("hdg", target, desired_managed, STANDARD_DREFS["fcu_heading_dial"], normalize=_normalize_heading)
+
+
+def _set_fcu_alt(target: float, desired_managed: bool) -> dict[str, Any]:
+    step_dref = READ_DREFS["fcu"].get("alt_step")
+    step_used: list[str] = []
+    if step_dref:
+        XP.write(step_dref, 1 if float(target) % 1000 == 0 else 0)
+        DATAREF_VALUE_CACHE.clear()
+        step_used.append(step_dref)
+    result = _set_fcu_direct("alt", target, desired_managed, STANDARD_DREFS["fcu_altitude_dial"])
+    result["dataref_used"] = step_used + result["dataref_used"]
+    return result
 
 
 def _not_impl(tool: str, missing: list[str]) -> None:
@@ -904,12 +924,16 @@ def read_flight_state() -> dict[str, Any]:
 def read_fcu() -> dict[str, Any]:
     """Read FCU selected/managed targets. Units: kt/Mach as displayed, degrees, ft, fpm. Returns spd, hdg, alt, vs, metric_alt. Example: {'spd': {'value': 250, 'managed': False}}."""
     d = _read_map(READ_DREFS["fcu"])
+    spd_value = _read_fcu_direct_value("fcu_airspeed_dial", d["spd_value"])
     hdg_value = _read_fcu_heading_value()
+    alt_value = _read_fcu_direct_value("fcu_altitude_dial", d["alt_value"])
+    vs_value = _read_fcu_direct_value("fcu_vs_dial", d["vs_value"])
+    trk_fpa = _bool(d["hdg_mode"])
     return {
-        "spd": {"value": d["spd_value"], "managed": _bool(d["spd_managed"])},
-        "hdg": {"value": hdg_value, "managed": _bool(d["hdg_managed"]), "mode": "trk" if _bool(d["hdg_mode"]) else "hdg"},
-        "alt": {"value": d["alt_value"], "managed": _bool(d["alt_managed"])},
-        "vs": {"value": d["vs_value"], "managed": _bool(d["vs_managed"])},
+        "spd": {"value": spd_value, "managed": _bool(d["spd_managed"])},
+        "hdg": {"value": hdg_value, "managed": _bool(d["hdg_managed"]), "mode": "trk" if trk_fpa else "hdg"},
+        "alt": {"value": alt_value, "managed": _bool(d["alt_managed"]), "step": 1000 if _bool(d["alt_step"]) else 100},
+        "vs": {"value": vs_value, "managed": _bool(d["vs_managed"]), "mode": "fpa" if trk_fpa else "vs"},
         "metric_alt": _bool(d["metric_alt"]),
     }
 
@@ -1608,10 +1632,10 @@ def set_fcu(channel: Literal["spd", "hdg", "alt", "vs"], value: float, managed: 
     if channel == "hdg":
         return _set_fcu_hdg(float(value), managed)
     if channel == "spd":
-        raise _fcu_numeric_disabled("spd")
+        return _set_fcu_direct("spd", float(value), managed, STANDARD_DREFS["fcu_airspeed_dial"])
     if channel == "vs":
-        raise _fcu_numeric_disabled("vs")
-    raise _fcu_numeric_disabled("alt")
+        return _set_fcu_direct("vs", float(value), managed, STANDARD_DREFS["fcu_vs_dial"])
+    return _set_fcu_alt(float(value), managed)
 
 
 @mcp.tool
