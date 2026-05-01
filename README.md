@@ -21,6 +21,16 @@ Run:
 python toliss_copilot_mcp.py
 ```
 
+By default this serves streamable HTTP at `http://127.0.0.1:8000/mcp`.
+
+Useful run options:
+
+```powershell
+python toliss_copilot_mcp.py --host 0.0.0.0 --port 8000 --path /mcp
+python toliss_copilot_mcp.py --transport stdio
+python toliss_copilot_mcp.py --ssl-certfile cert.pem --ssl-keyfile key.pem
+```
+
 The module imports without X-Plane running. Tool calls load the Web API dataref/command ID cache once and then use IDs directly.
 
 ## Refactor Smoke Tests
@@ -53,7 +63,7 @@ Example registration:
   "mcpServers": {
     "toliss-a321-copilot": {
       "command": "python",
-      "args": ["C:\\Users\\coolguy\\xplane-claude\\toliss_copilot_mcp.py"],
+      "args": ["C:\\Users\\coolguy\\xplane-claude\\toliss_copilot_mcp.py", "--transport", "stdio"],
       "cwd": "C:\\Users\\coolguy\\xplane-claude"
     }
   }
@@ -69,7 +79,7 @@ Add to `claude_desktop_config.json`:
   "mcpServers": {
     "toliss-a321-copilot": {
       "command": "python",
-      "args": ["C:\\Users\\coolguy\\xplane-claude\\toliss_copilot_mcp.py"]
+      "args": ["C:\\Users\\coolguy\\xplane-claude\\toliss_copilot_mcp.py", "--transport", "stdio"]
     }
   }
 }

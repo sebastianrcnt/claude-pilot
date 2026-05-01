@@ -9,12 +9,13 @@ ToLiss aircraft, or mapped datarefs/commands are unavailable.
 from __future__ import annotations
 
 import base64
+import argparse
 import asyncio
 import json
 import math
 import time
 from pathlib import Path
-from typing import Any, Callable, Literal
+from typing import Any, Callable, Literal, Sequence
 
 from .common import MappingError, ToLissNotLoadedError, XPlaneUnavailableError
 
@@ -1816,7 +1817,53 @@ def smoke_test(live: bool = False) -> dict[str, Any]:
     return result
 
 
+def run_server(argv: Sequence[str] | None = None) -> None:
+    """Run the MCP server. Defaults to streamable HTTP on plain HTTP."""
+    parser = argparse.ArgumentParser(description="Run the ToLiss A321 co-pilot MCP server.")
+    parser.add_argument(
+        "--transport",
+        choices=("streamable-http", "http", "sse", "stdio"),
+        default="streamable-http",
+        help="MCP transport to serve. Default: streamable-http.",
+    )
+    parser.add_argument("--host", default="127.0.0.1", help="HTTP bind host. Default: 127.0.0.1.")
+    parser.add_argument("--port", type=int, default=8000, help="HTTP bind port. Default: 8000.")
+    parser.add_argument("--path", default="/mcp", help="HTTP MCP endpoint path. Default: /mcp.")
+    parser.add_argument("--log-level", default=None, help="Optional server log level, e.g. info or debug.")
+    parser.add_argument("--ssl-certfile", default=None, help="Optional TLS certificate file for direct HTTPS.")
+    parser.add_argument("--ssl-keyfile", default=None, help="Optional TLS private key file for direct HTTPS.")
+    args = parser.parse_args(argv)
+
+    if bool(args.ssl_certfile) != bool(args.ssl_keyfile):
+        parser.error("--ssl-certfile and --ssl-keyfile must be provided together")
+    if args.transport == "stdio" and (args.ssl_certfile or args.ssl_keyfile):
+        parser.error("TLS options only apply to HTTP transports")
+
+    if args.transport == "stdio":
+        run_kwargs: dict[str, Any] = {"transport": "stdio"}
+        if args.log_level:
+            run_kwargs["log_level"] = args.log_level
+        mcp.run(**run_kwargs)
+        return
+
+    uvicorn_config = None
+    if args.ssl_certfile and args.ssl_keyfile:
+        uvicorn_config = {"ssl_certfile": args.ssl_certfile, "ssl_keyfile": args.ssl_keyfile}
+
+    run_kwargs = {
+        "transport": args.transport,
+        "host": args.host,
+        "port": args.port,
+        "path": args.path,
+    }
+    if args.log_level:
+        run_kwargs["log_level"] = args.log_level
+    if uvicorn_config:
+        run_kwargs["uvicorn_config"] = uvicorn_config
+    mcp.run(**run_kwargs)
+
+
 if __name__ == "__main__":
-    mcp.run()
+    run_server()
 
 
