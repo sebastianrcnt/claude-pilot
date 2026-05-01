@@ -18,6 +18,7 @@ env/
 .env.*
 .vscode/
 .idea/
+.mcp.json
 *.swp
 *.swo
 

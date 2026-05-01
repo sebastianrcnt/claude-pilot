@@ -1301,6 +1301,16 @@ def read_flight_state() -> dict[str, Any]:
 
 
 @mcp.tool
+def read_wind() -> dict[str, Any]:
+    """Read wind from captain-side ND display. Units: degrees magnetic, kt. Returns wind_dir_deg, wind_spd_kt, data_available. Example: {'wind_dir_deg': 270, 'wind_spd_kt': 85}."""
+    return {
+        "wind_dir_deg": _num(XP.read(_known("AirbusFBW/WindDirCapt"))),
+        "wind_spd_kt": _num(XP.read(_known("AirbusFBW/WindSpdCapt"))),
+        "data_available": _bool(XP.read(_known("AirbusFBW/WindDataAvailableCapt"))),
+    }
+
+
+@mcp.tool
 def read_fcu() -> dict[str, Any]:
     """Read FCU selected/managed targets. Units: kt/Mach as displayed, degrees, ft, fpm. Returns spd, hdg, alt, vs, metric_alt. Example: {'spd': {'value': 250, 'managed': False}}."""
     d = _read_map(READ_DREFS["fcu"])
@@ -2215,6 +2225,7 @@ def smoke_test(live: bool = False) -> dict[str, Any]:
 
     read_calls: dict[str, Callable[[], Any]] = {
         "read_flight_state": read_flight_state,
+        "read_wind": read_wind,
         "read_fcu": read_fcu,
         "read_fma": read_fma,
         "read_autoflight": read_autoflight,
