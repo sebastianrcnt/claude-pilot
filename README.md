@@ -89,6 +89,6 @@ Add to `claude_desktop_config.json`:
 
 Read tools: `read_flight_state`, `read_fcu`, `read_fma`, `read_autoflight`, `read_engines`, `read_overhead_full`, `read_pedestal`, `read_radios`, `read_atc`, `read_ecam`, `read_efis`, `read_weather_radar`.
 
-Write tools: `fcu_dial_turn`, `fcu_dial_pull`, `fcu_dial_push`, `set_fcu` (deprecated compatibility wrapper), `set_autoflight`, `set_lights`, `set_brightness`, `set_antiice`, `set_pneumatic`, `set_electrical`, `set_fuel`, `set_hydraulic`, `set_radio`, `set_acp`, `set_atc`, `set_pedestal`, `set_efis`, `set_ecam`, `set_weather_radar`.
+Write tools: `fcu_dial_turn`, `fcu_dial_pull`, `fcu_dial_push`, `set_fcu` (deprecated compatibility wrapper), `set_autoflight`, `set_lights`, `set_brightness`, `set_antiice`, `set_pneumatic`, `set_apu`, `set_electrical`, `set_fuel`, `set_hydraulic`, `set_radio`, `set_acp`, `set_atc`, `set_pedestal`, `set_efis`, `set_ecam`, `set_weather_radar`.
 
-The original task text says "26 tools" but also corrects the read list to 12 and keeps 16 writes. This implementation exposes all 28 requested tools.
+The implementation also exposes dedicated ECAM SD page read tools such as `read_sd_apu`, `read_sd_bleed`, and related system pages.

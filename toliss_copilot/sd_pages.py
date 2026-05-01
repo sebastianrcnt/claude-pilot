@@ -189,17 +189,32 @@ def read_sd_fuel() -> dict[str, Any]:
 
 @mcp.tool
 def read_sd_apu() -> dict[str, Any]:
-    """Read ECAM SD APU page datarefs. Units: %, deg C, flow units, booleans/enums. Medium/low confidence mappings need validation."""
+    """Read ECAM SD APU page datarefs. Units: n_percent %, egt deg C, fuel-flow units, booleans/enums."""
+    n_percent = _sd_read("AirbusFBW/APUN")
+    egt = _sd_read("AirbusFBW/APUEGT")
+    egt_limit = _sd_read("AirbusFBW/APUEGTLimit")
+    fuel_flow = _sd_read("AirbusFBW/APUFuelFlow")
+    master_on = _sd_bool("AirbusFBW/APUMaster")
+    starter_on = _sd_bool("AirbusFBW/APUStarter")
+    avail = _sd_bool("AirbusFBW/APUAvail")
+    bleed_switch_on = _sd_bool("AirbusFBW/APUBleedSwitch")
+    bleed_open = _sd_bool("AirbusFBW/APUBleedInd")
     return {
-        "n_percent": _sd_read("AirbusFBW/APUN"),
-        "egt_deg_c": _sd_read("AirbusFBW/APUEGT"),
-        "egt_limit_deg_c": _sd_read("AirbusFBW/APUEGTLimit"),
-        "fuel_flow": _sd_read("AirbusFBW/APUFuelFlow"),
-        "master_on": _sd_bool("AirbusFBW/APUMaster"),
-        "starter_on": _sd_bool("AirbusFBW/APUStarter"),
-        "available": _sd_bool("AirbusFBW/APUAvail"),
-        "bleed_switch_on": _sd_bool("AirbusFBW/APUBleedSwitch"),
-        "bleed_open": _sd_bool("AirbusFBW/APUBleedInd"),
+        "avail": avail,
+        "n_percent": n_percent,
+        "egt": egt,
+        "egt_deg_c": egt,
+        "egt_limit": egt_limit,
+        "egt_limit_deg_c": egt_limit,
+        "fuel_flow": fuel_flow,
+        "master": {"on": master_on},
+        "starter": {"on": starter_on},
+        "bleed": {"switch_on": bleed_switch_on, "open": bleed_open},
+        "master_on": master_on,
+        "starter_on": starter_on,
+        "available": avail,
+        "bleed_switch_on": bleed_switch_on,
+        "bleed_open": bleed_open,
         "gen": {"pushbutton_state": _sd_read("AirbusFBW/APUGenOHPArray")},
         "flap_open_ratio": _sd_read("AirbusFBW/APUFlapOpenRatio"),
         "fire": _sd_bool("AirbusFBW/APUOnFire"),

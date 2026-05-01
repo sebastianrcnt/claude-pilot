@@ -208,6 +208,7 @@ READ_DREFS: dict[str, dict[str, str]] = {
             "xbleed": "AirbusFBW/XBleedSwitch",
             "apu_bleed": "AirbusFBW/APUBleedSwitch",
             "apu_master": "AirbusFBW/APUMaster",
+            "apu_starter": "AirbusFBW/APUStarter",
             "apu_avail": "AirbusFBW/APUAvail",
             "bat": "AirbusFBW/BatOHPArray",
             "gen": "AirbusFBW/EngGenOHPArray",
@@ -357,6 +358,19 @@ STATE_COMMANDS: dict[str, dict[str, str]] = {
             "apu_bleed_on": "toliss_airbus/apucommands/BleedOn",
             "apu_bleed_off": "toliss_airbus/apucommands/BleedOff",
             "apu_bleed_toggle": "toliss_airbus/apucommands/BleedToggle",
+        }
+    ),
+    "apu": _m(
+        {
+            "master_on": "toliss_airbus/apucommands/MasterOn",
+            "master_off": "toliss_airbus/apucommands/MasterOff",
+            "master_toggle": "toliss_airbus/apucommands/MasterToggle",
+            "starter_on": "toliss_airbus/apucommands/StarterOn",
+            "starter_off": "toliss_airbus/apucommands/StarterOff",
+            "starter_toggle": "toliss_airbus/apucommands/StarterToggle",
+            "bleed_on": "toliss_airbus/apucommands/BleedOn",
+            "bleed_off": "toliss_airbus/apucommands/BleedOff",
+            "bleed_toggle": "toliss_airbus/apucommands/BleedToggle",
         }
     ),
     "electrical": _m(
@@ -1214,7 +1228,7 @@ def read_overhead_full() -> dict[str, Any]:
         "antiice": {"eng1": d["eng1_ai"], "eng2": d["eng2_ai"], "wing": d["wing_ai"]},
         "packs": {"1": d["pack1"], "2": d["pack2"]},
         "bleed": {"eng1": d["bleed1"], "eng2": d["bleed2"], "xbleed": d["xbleed"], "apu": d["apu_bleed"]},
-        "apu": {"master": d["apu_master"], "start": None, "avail": d["apu_avail"]},
+        "apu": {"master": d["apu_master"], "starter": d["apu_starter"], "start": d["apu_starter"], "avail": d["apu_avail"]},
         "electrical": {"bat1": _idx(d["bat"], 0), "bat2": _idx(d["bat"], 1), "gen1": _idx(d["gen"], 0), "gen2": _idx(d["gen"], 1), "apu_gen": d["apu_gen"], "ext_pwr": d["ext_pwr"], "ac_ess_feed": d["ac_ess_feed"]},
         "fuel": {"pumps": d["fuel_pumps"], "xfeed": d["fuel_xfeed"]},
         "hydraulic": {"green": _idx(d["hyd_press"], 0), "blue": _idx(d["hyd_press"], 1), "yellow": _idx(d["hyd_press"], 2), "ptu": d["ptu"], "rat": d["rat"], "pumps": d["hyd_pump"]},
@@ -1468,6 +1482,13 @@ def set_pneumatic(name: Literal["pack1", "pack2", "bleed1", "bleed2", "xbleed", 
     drefs = {"bleed1": "AirbusFBW/ENG1BleedSwitch", "bleed2": "AirbusFBW/ENG2BleedSwitch", "xbleed": "AirbusFBW/XBleedSwitch", "ram_air": "AirbusFBW/RamAirValveSD"}
     dref = _known(drefs[name])
     return _write_result(read_overhead_full, lambda: XP.write(dref, 1 if state == "on" else 0 if state == "off" else value), [dref])
+
+
+@mcp.tool
+def set_apu(name: Literal["master", "starter", "bleed"], state: Literal["on", "off", "toggle"]) -> dict[str, Any]:
+    """Set APU controls. name master/starter/bleed; state on/off/toggle. Use read_sd_apu or read_overhead_full to verify master, starter, avail, and bleed state. Returns success,before,after,dataref_used,command_used. Example: set_apu('master','on')."""
+    cmd = _state_command("apu", name, state)
+    return _write_result_with_commands(read_overhead_full, lambda: XP.command(cmd), commands=[cmd])
 
 
 @mcp.tool
