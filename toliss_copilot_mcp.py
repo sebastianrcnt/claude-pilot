@@ -723,9 +723,15 @@ def _command_available(name: str) -> bool:
     return name in XP.commands
 
 
+def _command_duration(command: str) -> float:
+    if command == "toliss_airbus/speedbrake/hold_armed":
+        return 0.5
+    return 0.0
+
+
 def _run_command_sequence(command: str, count: int, delay: float = 0.1) -> None:
     for _ in range(max(0, count)):
-        XP.command(command)
+        XP.command(command, duration=_command_duration(command))
         time.sleep(delay)
 
 
@@ -1731,7 +1737,11 @@ def set_pedestal(name: str, value: Any) -> dict[str, Any]:
                 return _noop_success(before)
             if target == "armed":
                 cmd = _known("toliss_airbus/speedbrake/hold_armed")
-                return _pedestal_target_result(lambda: XP.command(cmd), lambda after: after["speedbrake"].get("armed") is True, commands=[cmd])
+                return _pedestal_target_result(
+                    lambda: XP.command(cmd, duration=_command_duration(cmd)),
+                    lambda after: after["speedbrake"].get("armed") is True,
+                    commands=[cmd],
+                )
             ratio_dref = STANDARD_DREFS["speedbrake_ratio"]
             if XP.is_writable(ratio_dref):
                 return _pedestal_target_result(
