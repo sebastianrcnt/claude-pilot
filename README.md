@@ -21,14 +21,13 @@ Run:
 python toliss_copilot_mcp.py
 ```
 
-By default this serves streamable HTTP at `http://127.0.0.1:8000/mcp`.
+By default this runs on stdio for MCP client compatibility.
 
 Useful run options:
 
 ```powershell
-python toliss_copilot_mcp.py --host 0.0.0.0 --port 8000 --path /mcp
-python toliss_copilot_mcp.py --transport stdio
-python toliss_copilot_mcp.py --ssl-certfile cert.pem --ssl-keyfile key.pem
+python toliss_copilot_mcp.py --transport streamable-http --host 0.0.0.0 --port 8000 --path /mcp
+python toliss_copilot_mcp.py --transport streamable-http --ssl-certfile cert.pem --ssl-keyfile key.pem
 ```
 
 The module imports without X-Plane running. Tool calls load the Web API dataref/command ID cache once and then use IDs directly.
@@ -63,7 +62,7 @@ Example registration:
   "mcpServers": {
     "toliss-a321-copilot": {
       "command": "python",
-      "args": ["C:\\Users\\coolguy\\xplane-claude\\toliss_copilot_mcp.py", "--transport", "stdio"],
+      "args": ["C:\\Users\\coolguy\\xplane-claude\\toliss_copilot_mcp.py"],
       "cwd": "C:\\Users\\coolguy\\xplane-claude"
     }
   }
@@ -79,7 +78,7 @@ Add to `claude_desktop_config.json`:
   "mcpServers": {
     "toliss-a321-copilot": {
       "command": "python",
-      "args": ["C:\\Users\\coolguy\\xplane-claude\\toliss_copilot_mcp.py", "--transport", "stdio"]
+      "args": ["C:\\Users\\coolguy\\xplane-claude\\toliss_copilot_mcp.py"]
     }
   }
 }

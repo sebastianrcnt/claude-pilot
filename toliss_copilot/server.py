@@ -1872,13 +1872,13 @@ def smoke_test(live: bool = False) -> dict[str, Any]:
 
 
 def run_server(argv: Sequence[str] | None = None) -> None:
-    """Run the MCP server. Defaults to streamable HTTP on plain HTTP."""
+    """Run the MCP server. Defaults to stdio for MCP client compatibility."""
     parser = argparse.ArgumentParser(description="Run the ToLiss A321 co-pilot MCP server.")
     parser.add_argument(
         "--transport",
         choices=("streamable-http", "http", "sse", "stdio"),
-        default="streamable-http",
-        help="MCP transport to serve. Default: streamable-http.",
+        default="stdio",
+        help="MCP transport to serve. Default: stdio.",
     )
     parser.add_argument("--host", default="127.0.0.1", help="HTTP bind host. Default: 127.0.0.1.")
     parser.add_argument("--port", type=int, default=8000, help="HTTP bind port. Default: 8000.")
