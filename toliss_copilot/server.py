@@ -13,12 +13,19 @@ import argparse
 import asyncio
 import json
 import math
+import os
 import threading
 import time
 from pathlib import Path
 from typing import Any, Callable, Literal, Sequence
 
 from .common import MappingError, ToLissNotLoadedError, XPlaneUnavailableError
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+except Exception:
+    pass
 
 try:
     import httpx
@@ -50,6 +57,23 @@ ROOT = Path(__file__).resolve().parent.parent
 CATALOG_PATH = ROOT / "toliss_a321_catalog.json"
 
 mcp = FastMCP("toliss-a321-copilot")
+
+_XPLANE_PATH = os.getenv("XPLANE_PATH")
+_NAV_DB = None
+if _XPLANE_PATH:
+    try:
+        from . import navdata as _navdata_mod
+        _NAV_DB = _navdata_mod.load(_XPLANE_PATH)
+        print(
+            f"[navdata] Loaded {len(_NAV_DB.airports)} airports, "
+            f"{len(_NAV_DB.fixes)} fixes, {len(_NAV_DB.navaids)} navaids "
+            f"from {_XPLANE_PATH}",
+            flush=True,
+        )
+    except Exception as _nav_exc:
+        print(f"[navdata] WARNING: Failed to load nav data: {_nav_exc}", flush=True)
+else:
+    print("[navdata] XPLANE_PATH not set — nav lookup tools disabled.", flush=True)
 
 
 def _load_catalog() -> dict[str, dict[str, Any]]:
@@ -1310,6 +1334,30 @@ def read_wind() -> dict[str, Any]:
     }
 
 
+def nav_search(ident: str, types: list[str] | None = None) -> dict[str, Any]:
+    """Search nav database by identifier. types: list of 'airport','fix','navaid' (default: all). Returns list of matches with lat, lon, type, name. Example: nav_search('RKSI') or nav_search('ARNEM', ['fix'])."""
+    if _NAV_DB is None:
+        return {"error": "Nav database not loaded. Set XPLANE_PATH in .env."}
+    results = _NAV_DB.search(ident, types)  # type: ignore[arg-type]
+    return {
+        "query": ident,
+        "results": [
+            {
+                "ident": e.ident, "lat": e.lat, "lon": e.lon,
+                "type": e.type, "name": e.name,
+                "freq_mhz": e.freq_mhz, "nav_subtype": e.nav_subtype,
+            }
+            for e in results
+        ],
+    }
+
+
+def nav_bearing_distance(from_lat: float, from_lon: float, to_lat: float, to_lon: float) -> dict[str, Any]:
+    """Calculate great-circle bearing and distance between two lat/lon points. Units: degrees true, nautical miles. Example: nav_bearing_distance(37.46, 126.44, 35.17, 129.22)."""
+    from . import navdata as _navdata_mod
+    return _navdata_mod.bearing_distance(from_lat, from_lon, to_lat, to_lon)
+
+
 @mcp.tool
 def read_fcu() -> dict[str, Any]:
     """Read FCU selected/managed targets. Units: kt/Mach as displayed, degrees, ft, fpm. Returns spd, hdg, alt, vs, metric_alt. Example: {'spd': {'value': 250, 'managed': False}}."""
@@ -2309,6 +2357,11 @@ def run_server(argv: Sequence[str] | None = None) -> None:
     if uvicorn_config:
         run_kwargs["uvicorn_config"] = uvicorn_config
     mcp.run(**run_kwargs)
+
+
+if _NAV_DB is not None:
+    mcp.tool(nav_search)
+    mcp.tool(nav_bearing_distance)
 
 
 if __name__ == "__main__":
