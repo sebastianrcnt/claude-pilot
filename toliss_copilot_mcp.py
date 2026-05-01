@@ -8,6 +8,7 @@ ToLiss aircraft, or mapped datarefs/commands are unavailable.
 
 from __future__ import annotations
 
+import base64
 import json
 import time
 from pathlib import Path
@@ -851,26 +852,46 @@ def read_atc() -> dict[str, Any]:
     }
 
 
-def _colored_lines(prefix: str, max_lines: int) -> list[dict[str, str]]:
-    colors = {"w": "white", "g": "green", "a": "amber", "r": "red", "b": "cyan", "m": "magenta"}
-    out: list[dict[str, str]] = []
+def _decode_toliss_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        try:
+            raw = base64.b64decode(value, validate=True)
+            return raw.rstrip(b"\x00").decode("ascii", errors="replace").rstrip()
+        except Exception:
+            return value.rstrip("\x00").rstrip()
+    if isinstance(value, list):
+        try:
+            raw = bytes(int(item) & 0xFF for item in value)
+            return raw.rstrip(b"\x00").decode("ascii", errors="replace").rstrip()
+        except Exception:
+            return ""
+    if isinstance(value, bytes):
+        return value.rstrip(b"\x00").decode("ascii", errors="replace").rstrip()
+    return str(value).rstrip("\x00").rstrip()
+
+
+def _colored_lines(prefix: str, max_lines: int) -> list[dict[str, Any]]:
+    colors = {"w": "white", "g": "green", "b": "blue", "a": "amber", "r": "red"}
+    out: list[dict[str, Any]] = []
     for i in range(1, max_lines + 1):
         for suffix, color in colors.items():
             name = f"AirbusFBW/{prefix}line{i}{suffix}" if prefix == "SD" else f"AirbusFBW/{prefix}{i}{suffix}Text"
-            if name in CATALOG:
-                try:
-                    text = XP.read(name)
-                except Exception:
-                    text = ""
-                if text:
-                    out.append({"text": str(text), "color": color})
-                    break
+            if name not in CATALOG:
+                continue
+            try:
+                text = _decode_toliss_text(XP.read(name))
+            except Exception:
+                text = ""
+            if text:
+                out.append({"line": i, "color": color, "text": text})
     return out
 
 
 @mcp.tool
 def read_ecam(side: Literal["ewd", "sd"]) -> dict[str, Any]:
-    """Read ECAM text. Units: text and color names. side='ewd' or 'sd'. Returns lines and current_sd_page for sd. Example: {'lines': [{'text': 'APU AVAIL', 'color': 'green'}]}."""
+    """Read ECAM text. Units: decoded ASCII text and color names. side='ewd' or 'sd'. Returns lines with line,color,text and current_sd_page for sd. Example: {'lines': [{'line': 1, 'text': 'APU AVAIL', 'color': 'green'}]}."""
     if side == "ewd":
         return {"lines": _colored_lines("EWD", 7), "current_sd_page": None}
     page = XP.read(_known("AirbusFBW/SDPage"))

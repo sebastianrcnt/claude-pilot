@@ -25,6 +25,7 @@ The server uses `toliss_a321_catalog.json` for ToLiss/AirbusFBW names and direct
 - ✅ `set_pedestal.parking_brake`: command-first using ToLiss park brake commands.
 - ✅ `set_pedestal.engine_master_1/2`: command-only using ToLiss engine master commands.
 - ✅ X-Plane dataref cache stores `is_writable`; direct PATCH paths reject read-only datarefs before writing.
+- ✅ `read_ecam`: decodes ToLiss fixed-length byte-array ECAM text datarefs returned by the Web API as base64, strips null padding, omits empty color slots, and preserves multiple color segments per line.
 
 ## Remaining
 
@@ -51,10 +52,6 @@ The server uses `toliss_a321_catalog.json` for ToLiss/AirbusFBW names and direct
 ## read_autoflight
 
 - `exped`: catalog exposes `AirbusFBW/EXPEDbutton` as a command only; no readable EXPED active/armed dataref found.
-
-## read_ecam
-
-- EWD/SD lines are inferred from ToLiss color-suffixed text datarefs (`EWD...Text`, `SDline...`). Exact line/color semantics are source-derived but not documented by the catalog.
 
 ## set_brightness
 
