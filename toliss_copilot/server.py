@@ -1330,6 +1330,18 @@ def read_flight_state() -> dict[str, Any]:
 
 
 @mcp.tool
+def set_engine_master(engine: Literal[1, 2], state: Literal["on", "off"]) -> dict[str, Any]:
+    """Set ENG MASTER switch 1 or 2. state on=1 off=0. Returns success,before,after. Example: set_engine_master(1, 'off')."""
+    dref = _known(f"AirbusFBW/ENG{engine}MasterSwitch")
+    before = XP.read(dref)
+    value = 1 if state == "on" else 0
+    XP.write(dref, value)
+    DATAREF_VALUE_CACHE.clear()
+    after = XP.read(dref)
+    return {"success": True, "before": before, "after": after, "dataref_used": [dref]}
+
+
+@mcp.tool
 def read_wind() -> dict[str, Any]:
     """Read wind from captain-side ND display. Units: degrees magnetic, kt. Returns wind_dir_deg, wind_spd_kt, data_available. Example: {'wind_dir_deg': 270, 'wind_spd_kt': 85}."""
     return {
