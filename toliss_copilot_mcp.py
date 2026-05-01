@@ -420,9 +420,6 @@ STATE_COMMANDS: dict[str, dict[str, str]] = {
 
 WRITE_DREFS = _m(
     {
-        "fcu_spd": "toliss_airbus/smartCopilotSync/ATA22/FCUSpeed",
-        "fcu_hdg": "toliss_airbus/smartCopilotSync/ATA22/FCUHeading",
-        "fcu_vs": "toliss_airbus/smartCopilotSync/ATA22/FCUVerticalSpeed",
         "fcu_alt": "AirbusFBW/FCUALT_M",
         "panel_brightness": "AirbusFBW/PanelBrightnessLevel",
         "flood_brightness": "AirbusFBW/FloodLightLevels",
@@ -1488,9 +1485,14 @@ def debug_search_xplane_names(term: str) -> dict[str, Any]:
 @mcp.tool
 def set_fcu(channel: Literal["spd", "hdg", "alt", "vs"], value: float, managed: bool) -> dict[str, Any]:
     """Set FCU channel. Units: spd kt/Mach raw, hdg deg, alt ft, vs fpm. managed=True pushes, False pulls, then writes value. Returns success,before,after,dataref_used. Example: set_fcu('spd', 250, False)."""
-    value_dref = {"spd": "fcu_spd", "hdg": "fcu_hdg", "alt": "fcu_alt", "vs": "fcu_vs"}[channel]
     cmd = COMMANDS[f"{channel}_{'push' if managed else 'pull'}"]
-    dref = WRITE_DREFS[value_dref]
+    if channel != "alt":
+        XP.command(cmd)
+        raise MappingError(
+            f"set_fcu('{channel}') numeric target is disabled because the old SmartCopilotSync write mapping does not drive the actual ToLiss FCU. "
+            "A verified ToLiss control dataref or command path is required."
+        )
+    dref = WRITE_DREFS["fcu_alt"]
 
     def action() -> None:
         XP.command(cmd)
