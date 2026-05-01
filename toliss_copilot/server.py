@@ -163,14 +163,20 @@ READ_DREFS: dict[str, dict[str, str]] = {
     ),
     "fma": _m(
         {
-            "athr_active": "AirbusFBW/FMA1g",
-            "athr_armed": "AirbusFBW/FMA1b",
-            "vert_active": "AirbusFBW/FMA2g" if "AirbusFBW/FMA2g" in CATALOG else "AirbusFBW/FMA2w",
-            "vert_armed": "AirbusFBW/FMA2b",
-            "lat_active": "AirbusFBW/FMA3g" if "AirbusFBW/FMA3g" in CATALOG else "AirbusFBW/FMA3w",
-            "lat_armed": "AirbusFBW/FMA3b",
-            "approach_active": "toliss_airbus/pfdoutputs/general/approach_type",
-            "approach_armed": "AirbusFBW/APPRilluminated",
+            # ToLiss exposes the PFD FMA as fixed-width text layers:
+            # AirbusFBW/FMA{row}{color}, where row is 1..3 and colors are
+            # w=white, g=green, b=blue/cyan, a=amber, m=magenta when present.
+            # Current A321 catalog/runtime exposes row1 w/g/b, row2 w/b/m,
+            # and row3 w/b/a. Each dataref is a 37-byte null-padded text row.
+            "row1_w": "AirbusFBW/FMA1w",
+            "row1_g": "AirbusFBW/FMA1g",
+            "row1_b": "AirbusFBW/FMA1b",
+            "row2_w": "AirbusFBW/FMA2w",
+            "row2_b": "AirbusFBW/FMA2b",
+            "row2_m": "AirbusFBW/FMA2m",
+            "row3_w": "AirbusFBW/FMA3w",
+            "row3_b": "AirbusFBW/FMA3b",
+            "row3_a": "AirbusFBW/FMA3a",
         }
     ),
     "autoflight": _m(
@@ -783,6 +789,75 @@ def _not_impl(tool: str, missing: list[str]) -> None:
     raise MappingError(f"{tool} is not implemented because catalog mappings are missing: {', '.join(missing)}")
 
 
+def _decode_fixed_text(value: Any, width: int = 37) -> str:
+    if value is None:
+        return " " * width
+    if isinstance(value, str):
+        try:
+            raw = base64.b64decode(value, validate=True)
+            return raw.rstrip(b"\x00").decode("ascii", errors="replace").ljust(width)[:width]
+        except Exception:
+            return value.rstrip("\x00").ljust(width)[:width]
+    if isinstance(value, list):
+        try:
+            raw = bytes(int(item) & 0xFF for item in value)
+            return raw.rstrip(b"\x00").decode("ascii", errors="replace").ljust(width)[:width]
+        except Exception:
+            return " " * width
+    if isinstance(value, bytes):
+        return value.rstrip(b"\x00").decode("ascii", errors="replace").ljust(width)[:width]
+    return str(value).ljust(width)[:width]
+
+
+FMA_WIDTH = 37
+FMA_COLUMNS = {
+    # Measured live on ToLiss A321: 37 characters split into five fixed cells.
+    # Positional convention only: col1 often contains A/THR modes, col2
+    # vertical modes, col3 lateral modes, col4 approach/common annunciations,
+    # and col5 AP/FD/A-THR/CAT status. Do not treat the labels as semantics.
+    "col1": slice(0, 7),
+    "col2": slice(7, 17),
+    "col3": slice(17, 27),
+    "col4": slice(27, 32),
+    "col5": slice(32, 37),
+}
+FMA_COLORS = {"w": "white", "g": "green", "b": "cyan", "a": "amber", "m": "magenta"}
+FMA_COLOR_PRIORITY = ("g", "b", "w", "a", "m")
+
+
+def _fma_cell(layer_text: str, column: str) -> str:
+    return layer_text[FMA_COLUMNS[column]].strip()
+
+
+def _fma_raw_layers(d: dict[str, Any]) -> dict[str, str]:
+    raw: dict[str, str] = {}
+    for row in (1, 2, 3):
+        for suffix, color in FMA_COLORS.items():
+            key = f"row{row}_{suffix}"
+            if key in d:
+                raw[f"row{row}_{color}"] = _decode_fixed_text(d[key], FMA_WIDTH)
+    return raw
+
+
+def _fma_rows(raw: dict[str, str]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for row in (1, 2, 3):
+        cells: list[dict[str, Any]] = []
+        row_layers = {suffix: raw.get(f"row{row}_{color}", " " * FMA_WIDTH) for suffix, color in FMA_COLORS.items()}
+        for col in FMA_COLUMNS:
+            selected_text = ""
+            selected_color = None
+            for suffix in FMA_COLOR_PRIORITY:
+                text = _fma_cell(row_layers[suffix], col)
+                if text:
+                    selected_text = text
+                    selected_color = FMA_COLORS[suffix]
+                    break
+            cells.append({"col": col, "text": selected_text, "color": selected_color})
+        rows.append({"row": row, "cells": cells})
+    return rows
+
+
 def _write_result(read_fn: Callable[[], dict[str, Any]], action: Callable[[], None], used: list[str]) -> dict[str, Any]:
     before = read_fn()
     action()
@@ -939,16 +1014,11 @@ def read_fcu() -> dict[str, Any]:
 
 @mcp.tool
 def read_fma() -> dict[str, Any]:
-    """Read FMA five columns. Units: decoded ASCII text/status as provided by ToLiss. Returns athr, vert, lat, approach, ap_status each with active/armed. Example: {'athr': {'active': 'SPEED', 'armed': ''}}."""
+    """Read raw ToLiss PFD FMA text grid. Returns rows with 3 fixed-width display rows, 5 positional columns (col1..col5), decoded text, and display color; raw preserves each ToLiss color-layer dataref as fixed-width text for debugging/reparsing. General Airbus FMA convention: col1 often carries A/THR modes, col2 vertical modes, col3 lateral modes, col4 approach/common annunciations, and col5 AP/FD/A-THR/CAT status, but callers should interpret text rather than rely on column names as semantics. Colors usually mean green=active, cyan/blue=armed/constraint, white=info/status, amber=warning/caution, magenta=managed/target guidance. Common texts include SPEED/MACH, HDG/TRK/NAV/LOC, ALT/ALT*/VS/FPA/CLB/DES/G/S, AP1/AP2, FD, A/THR, CAT. ap_status is a convenience field derived from AP1/AP2 engage readbacks, not parsed from the grid. Example: {'rows': [{'row': 1, 'cells': [{'col': 'col1', 'text': 'SPEED', 'color': 'green'}]}], 'ap_status': {'active': 'AP1'}}."""
     d = _read_map(READ_DREFS["fma"])
+    raw = _fma_raw_layers(d)
     ap1 = _bool(XP.read(READ_DREFS["autoflight"]["ap1"]))
     ap2 = _bool(XP.read(READ_DREFS["autoflight"]["ap2"]))
-
-    def text(key: str) -> str:
-        from .displays import _decode_toliss_text
-
-        return _decode_toliss_text(d[key]).strip()
-
     if ap1 and ap2:
         ap_active = "AP1+2"
     elif ap1:
@@ -959,10 +1029,8 @@ def read_fma() -> dict[str, Any]:
         ap_active = ""
 
     return {
-        "athr": {"active": text("athr_active"), "armed": text("athr_armed")},
-        "vert": {"active": text("vert_active"), "armed": text("vert_armed")},
-        "lat": {"active": text("lat_active"), "armed": text("lat_armed")},
-        "approach": {"active": d["approach_active"], "armed": d["approach_armed"]},
+        "rows": _fma_rows(raw),
+        "raw": raw,
         "ap_status": {"active": ap_active, "armed": ""},
     }
 
