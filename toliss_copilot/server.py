@@ -836,7 +836,10 @@ def _fcu_value_close(channel: str, actual: float | None, target: float | None) -
     if channel == "hdg":
         return abs(_shortest_heading_delta(actual, target)) <= 1.0
     if channel == "spd":
-        return abs(actual - target) <= 1.0
+        # Mach values are stored as floats < 2.0; IAS as knots (>= 1.0).
+        # Use a tight Mach tolerance to avoid treating e.g. M0.73 as "close to" M0.78.
+        tol = 0.005 if (actual < 2.0 or target < 2.0) else 1.0
+        return abs(actual - target) <= tol
     if channel == "vs":
         return abs(actual - target) <= 100.0
     if channel == "alt":
