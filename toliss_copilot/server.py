@@ -1361,6 +1361,14 @@ def nav_bearing_distance(from_lat: float, from_lon: float, to_lat: float, to_lon
     return _navdata_mod.bearing_distance(from_lat, from_lon, to_lat, to_lon)
 
 
+def nav_search_ils(airport_icao: str) -> dict[str, Any]:
+    """Search ILS approaches at an airport by ICAO code. Returns localizer ident, frequency, course, and runway. Example: nav_search_ils('RJTT')."""
+    if _NAV_DB is None:
+        return {"error": "Nav database not loaded. Set XPLANE_PATH in .env."}
+    results = _NAV_DB.search_ils(airport_icao)
+    return {"airport_icao": airport_icao.strip().upper(), "ils": results}
+
+
 @mcp.tool
 def read_fcu() -> dict[str, Any]:
     """Read FCU selected/managed targets. Units: kt/Mach as displayed, degrees, ft, fpm. Returns spd, hdg, alt, vs, metric_alt. Example: {'spd': {'value': 250, 'managed': False}}."""
@@ -2365,6 +2373,7 @@ def run_server(argv: Sequence[str] | None = None) -> None:
 if _NAV_DB is not None:
     mcp.tool(nav_search)
     mcp.tool(nav_bearing_distance)
+    mcp.tool(nav_search_ils)
 
 
 if __name__ == "__main__":

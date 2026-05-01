@@ -25,6 +25,8 @@ class NavEntry:
     name: str = ""
     freq_mhz: float | None = None
     nav_subtype: str | None = None  # VOR/NDB/ILS etc.
+    course_deg: float | None = None  # runway course for ILS localizers
+    runway: str | None = None  # runway designator e.g. "34R"
 
 
 @dataclass
@@ -32,6 +34,7 @@ class NavDatabase:
     airports: dict[str, NavEntry] = field(default_factory=dict)
     fixes: dict[str, list[NavEntry]] = field(default_factory=dict)
     navaids: dict[str, list[NavEntry]] = field(default_factory=dict)
+    ils: dict[str, list[NavEntry]] = field(default_factory=dict)
 
     def search(self, query: str, types: list[NavType] | None = None) -> list[NavEntry]:
         """Search by exact ident (case-insensitive). Returns up to 10 results."""
@@ -45,6 +48,23 @@ class NavDatabase:
         if types is None or "navaid" in types:
             results.extend(self.navaids.get(q, []))
         return results[:10]
+
+    def search_ils(self, airport_icao: str) -> list[dict]:
+        """Return ILS localizer entries for the given airport ICAO code."""
+        icao = airport_icao.strip().upper()
+        entries = self.ils.get(icao, [])
+        return [
+            {
+                "ident": e.ident,
+                "lat": e.lat,
+                "lon": e.lon,
+                "freq_mhz": e.freq_mhz,
+                "course_deg": e.course_deg,
+                "name": e.name,
+                "runway": e.runway,
+            }
+            for e in entries
+        ]
 
 
 def _haversine(lat1: float, lon1: float, lat2: float, lon2: float) -> tuple[float, float]:
@@ -136,6 +156,40 @@ def _load_navaids(path: Path) -> dict[str, list[NavEntry]]:
     return navaids
 
 
+def _load_ils(path: Path) -> dict[str, list[NavEntry]]:
+    """Load type-4 ILS localizer entries from earth_nav.dat, keyed by airport ICAO."""
+    ils: dict[str, list[NavEntry]] = {}
+    with open(path, encoding="utf-8", errors="replace") as f:
+        for line in f:
+            parts = line.split(None, 11)
+            if not parts or parts[0] != "4":
+                continue
+            if len(parts) < 11:
+                continue
+            try:
+                lat = float(parts[1])
+                lon = float(parts[2])
+                freq_mhz = int(parts[4]) / 100.0
+                course_deg = round(float(parts[6]) % 360, 2)
+                ident = parts[7].strip()
+                airport_icao = parts[8].strip()
+                # parts[10] is e.g. "34R ILS-cat-III" or "16L ILS-cat-I"
+                remainder = parts[10].strip()
+                rwy_parts = remainder.split(None, 1)
+                runway = rwy_parts[0] if rwy_parts else ""
+                ils_cat = rwy_parts[1] if len(rwy_parts) > 1 else ""
+                name = f"{airport_icao} {runway} {ils_cat}".strip()
+                entry = NavEntry(
+                    ident=ident, lat=lat, lon=lon, type="navaid",
+                    name=name, freq_mhz=freq_mhz, nav_subtype="ILS-LOC",
+                    course_deg=course_deg, runway=runway,
+                )
+                ils.setdefault(airport_icao, []).append(entry)
+            except (ValueError, IndexError):
+                continue
+    return ils
+
+
 def load(xplane_path: str) -> NavDatabase:
     root = Path(xplane_path)
     default_data = root / "Resources" / "default data"
@@ -150,4 +204,5 @@ def load(xplane_path: str) -> NavDatabase:
         db.fixes = _load_fixes(fix_path)
     if nav_path.exists():
         db.navaids = _load_navaids(nav_path)
+        db.ils = _load_ils(nav_path)
     return db
