@@ -940,12 +940,15 @@ def read_fcu() -> dict[str, Any]:
 
 @mcp.tool
 def read_fma() -> dict[str, Any]:
-    """Read FMA five columns. Units: text/status as provided by ToLiss. Returns athr, vert, lat, approach, ap_status each with active/armed. Example: {'athr': {'active': 'SPEED', 'armed': ''}}."""
+    """Read FMA five columns. Units: decoded ASCII text/status as provided by ToLiss. Returns athr, vert, lat, approach, ap_status each with active/armed. Example: {'athr': {'active': 'SPEED', 'armed': ''}}."""
     d = _read_map(READ_DREFS["fma"])
+    def text(key: str) -> str:
+        return _decode_toliss_text(d[key]).strip()
+
     return {
-        "athr": {"active": d["athr_active"], "armed": d["athr_armed"]},
-        "vert": {"active": d["vert_active"], "armed": d["vert_armed"]},
-        "lat": {"active": d["lat_active"], "armed": d["lat_armed"]},
+        "athr": {"active": text("athr_active"), "armed": text("athr_armed")},
+        "vert": {"active": text("vert_active"), "armed": text("vert_armed")},
+        "lat": {"active": text("lat_active"), "armed": text("lat_armed")},
         "approach": {"active": d["approach_active"], "armed": d["approach_armed"]},
         "ap_status": {"active": d["ap_status_active"], "armed": d["ap_status_armed"]},
     }
