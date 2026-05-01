@@ -171,8 +171,6 @@ READ_DREFS: dict[str, dict[str, str]] = {
             "lat_armed": "AirbusFBW/FMA3b",
             "approach_active": "toliss_airbus/pfdoutputs/general/approach_type",
             "approach_armed": "AirbusFBW/APPRilluminated",
-            "ap_status_active": "toliss_airbus/pfdoutputs/general/ap_engage_boxed",
-            "ap_status_armed": "AirbusFBW/FMAAPLeftArmedBox",
         }
     ),
     "autoflight": _m(
@@ -943,15 +941,29 @@ def read_fcu() -> dict[str, Any]:
 def read_fma() -> dict[str, Any]:
     """Read FMA five columns. Units: decoded ASCII text/status as provided by ToLiss. Returns athr, vert, lat, approach, ap_status each with active/armed. Example: {'athr': {'active': 'SPEED', 'armed': ''}}."""
     d = _read_map(READ_DREFS["fma"])
+    ap1 = _bool(XP.read(READ_DREFS["autoflight"]["ap1"]))
+    ap2 = _bool(XP.read(READ_DREFS["autoflight"]["ap2"]))
+
     def text(key: str) -> str:
+        from .displays import _decode_toliss_text
+
         return _decode_toliss_text(d[key]).strip()
+
+    if ap1 and ap2:
+        ap_active = "AP1+2"
+    elif ap1:
+        ap_active = "AP1"
+    elif ap2:
+        ap_active = "AP2"
+    else:
+        ap_active = ""
 
     return {
         "athr": {"active": text("athr_active"), "armed": text("athr_armed")},
         "vert": {"active": text("vert_active"), "armed": text("vert_armed")},
         "lat": {"active": text("lat_active"), "armed": text("lat_armed")},
         "approach": {"active": d["approach_active"], "armed": d["approach_armed"]},
-        "ap_status": {"active": d["ap_status_active"], "armed": d["ap_status_armed"]},
+        "ap_status": {"active": ap_active, "armed": ""},
     }
 
 
