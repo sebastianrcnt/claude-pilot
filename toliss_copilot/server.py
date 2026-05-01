@@ -179,6 +179,7 @@ READ_DREFS: dict[str, dict[str, str]] = {
             "fd2": "AirbusFBW/FD2Engage",
             "loc_armed": "AirbusFBW/LOCilluminated",
             "appr_armed": "AirbusFBW/APPRilluminated",
+            "vertical_armed": "AirbusFBW/APVerticalArmed",
             "vertical_mode": "AirbusFBW/APVerticalMode",
             "trk_fpa_mode": "AirbusFBW/HDGTRKmode",
         }
@@ -792,6 +793,10 @@ def _set_fcu_hdg(target: float, desired_managed: bool) -> dict[str, Any]:
     return _set_fcu_direct("hdg", target, desired_managed, STANDARD_DREFS["fcu_heading_dial"], normalize=_normalize_heading)
 
 
+def _set_fcu_spd(target: float, desired_managed: bool) -> dict[str, Any]:
+    return _set_fcu_direct("spd", target, desired_managed, STANDARD_DREFS["fcu_airspeed_dial"])
+
+
 def _set_fcu_alt(target: float, desired_managed: bool) -> dict[str, Any]:
     step_dref = READ_DREFS["fcu"].get("alt_step")
     step_used: list[str] = []
@@ -802,6 +807,77 @@ def _set_fcu_alt(target: float, desired_managed: bool) -> dict[str, Any]:
     result = _set_fcu_direct("alt", target, desired_managed, STANDARD_DREFS["fcu_altitude_dial"], command_after_dial=True)
     result["dataref_used"] = step_used + result["dataref_used"]
     return result
+
+
+def _set_fcu_vs(target: float, desired_managed: bool) -> dict[str, Any]:
+    return _set_fcu_direct("vs", target, desired_managed, STANDARD_DREFS["fcu_vs_dial"])
+
+
+def _fcu_dial_dref(channel: Literal["spd", "hdg", "alt", "vs"]) -> str:
+    return {
+        "spd": STANDARD_DREFS["fcu_airspeed_dial"],
+        "hdg": STANDARD_DREFS["fcu_heading_dial"],
+        "alt": STANDARD_DREFS["fcu_altitude_dial"],
+        "vs": STANDARD_DREFS["fcu_vs_dial"],
+    }[channel]
+
+
+def _normalize_fcu_target(channel: Literal["spd", "hdg", "alt", "vs"], value: float) -> float:
+    return _normalize_heading(value) if channel == "hdg" else float(value)
+
+
+def _write_fcu_dial_only(channel: Literal["spd", "hdg", "alt", "vs"], value: float) -> dict[str, Any]:
+    before = read_fcu()
+    target = _normalize_fcu_target(channel, float(value))
+    dataref_used: list[str] = []
+    if channel == "alt":
+        step_dref = READ_DREFS["fcu"].get("alt_step")
+        if step_dref:
+            XP.write(step_dref, 1 if float(target) % 1000 == 0 else 0)
+            dataref_used.append(step_dref)
+    dref = _fcu_dial_dref(channel)
+    XP.write(dref, target)
+    dataref_used.append(dref)
+    DATAREF_VALUE_CACHE.clear()
+    time.sleep(0.15)
+    after = read_fcu()
+    actual = _num(after[channel]["value"])
+    actual = None if actual is None else _normalize_fcu_target(channel, float(actual))
+    return {
+        "success": _fcu_value_close(channel, actual, target),
+        "before": before,
+        "after": after,
+        "dataref_used": dataref_used,
+        "command_used": [],
+    }
+
+
+def _fcu_command_only(channel: Literal["spd", "hdg", "alt", "vs"], action: Literal["push", "pull"]) -> dict[str, Any]:
+    before = read_fcu()
+    cmd = COMMANDS[f"{channel}_{action}"]
+    XP.command(cmd)
+    DATAREF_VALUE_CACHE.clear()
+    time.sleep(0.15)
+    after = read_fcu()
+    return {
+        "success": True,
+        "before": before,
+        "after": after,
+        "dataref_used": [],
+        "command_used": [cmd],
+    }
+
+
+def _fcu_pull_with_optional_value(channel: Literal["spd", "hdg", "alt", "vs"], value: float | None) -> dict[str, Any]:
+    if value is None:
+        return _fcu_command_only(channel, "pull")
+    if channel == "hdg":
+        return _set_fcu_hdg(float(value), False)
+    if channel == "spd":
+        return _set_fcu_spd(float(value), False)
+    if channel == "vs":
+        return _set_fcu_vs(float(value), False)
+    return _set_fcu_alt(float(value), False)
 
 
 def _not_impl(tool: str, missing: list[str]) -> None:
@@ -842,6 +918,15 @@ FMA_COLUMNS = {
 }
 FMA_COLORS = {"w": "white", "g": "green", "b": "cyan", "a": "amber", "m": "magenta"}
 FMA_COLOR_PRIORITY = ("g", "b", "w", "a", "m")
+FMA_ROW_PRIORITY = (1, 2, 3)
+VERTICAL_MODE_LABELS = {
+    # Observed ToLiss active vertical mode values. Keep this as diagnostic
+    # metadata; the display text still comes from the FMA text datarefs.
+    101: "OP CLB",
+    102: "OP DES",
+    104: "ALT",
+    107: "VS",
+}
 
 
 def _fma_cell(layer_text: str, column: str) -> str:
@@ -875,6 +960,28 @@ def _fma_rows(raw: dict[str, str]) -> list[dict[str, Any]]:
             cells.append({"col": col, "text": selected_text, "color": selected_color})
         rows.append({"row": row, "cells": cells})
     return rows
+
+
+def _fma_columns(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    by_row = {row["row"]: row["cells"] for row in rows}
+    columns: dict[str, dict[str, Any]] = {}
+    for col in FMA_COLUMNS:
+        selected = {"text": "", "color": None, "row": None}
+        for row_num in FMA_ROW_PRIORITY:
+            cells = by_row.get(row_num, [])
+            cell = next((item for item in cells if item["col"] == col), None)
+            if cell and cell["text"]:
+                selected = {"text": cell["text"], "color": cell["color"], "row": row_num}
+                break
+        columns[col] = selected
+    return columns
+
+
+def _vertical_mode_label(value: Any) -> str | None:
+    raw = _num(value)
+    if raw is None:
+        return None
+    return VERTICAL_MODE_LABELS.get(int(raw))
 
 
 def _write_result(read_fn: Callable[[], dict[str, Any]], action: Callable[[], None], used: list[str]) -> dict[str, Any]:
@@ -1033,11 +1140,14 @@ def read_fcu() -> dict[str, Any]:
 
 @mcp.tool
 def read_fma() -> dict[str, Any]:
-    """Read raw ToLiss PFD FMA text grid. Returns rows with 3 fixed-width display rows, 5 positional columns (col1..col5), decoded text, and display color; raw preserves each ToLiss color-layer dataref as fixed-width text for debugging/reparsing. General Airbus FMA convention: col1 often carries A/THR modes, col2 vertical modes, col3 lateral modes, col4 approach/common annunciations, and col5 AP/FD/A-THR/CAT status, but callers should interpret text rather than rely on column names as semantics. Colors usually mean green=active, cyan/blue=armed/constraint, white=info/status, amber=warning/caution, magenta=managed/target guidance. Common texts include SPEED/MACH, HDG/TRK/NAV/LOC, ALT/ALT*/VS/FPA/CLB/DES/G/S, AP1/AP2, FD, A/THR, CAT. ap_status is a convenience field derived from AP1/AP2 engage readbacks, not parsed from the grid. Example: {'rows': [{'row': 1, 'cells': [{'col': 'col1', 'text': 'SPEED', 'color': 'green'}]}], 'ap_status': {'active': 'AP1'}}."""
+    """Read raw ToLiss PFD FMA text grid. Returns rows with 3 fixed-width display rows, 5 positional columns (col1..col5), decoded text, and display color; columns is a row-precedence convenience view where active row 1 text wins over armed/status rows. raw preserves each ToLiss color-layer dataref as fixed-width text for debugging/reparsing. General Airbus FMA convention: col1 often carries A/THR modes, col2 vertical modes, col3 lateral modes, col4 approach/common annunciations, and col5 AP/FD/A-THR/CAT status, but callers should interpret text rather than rely on column names as semantics. Colors usually mean green=active, cyan/blue=armed/constraint, white=info/status, amber=warning/caution, magenta=managed/target guidance. Common texts include SPEED/MACH, HDG/TRK/NAV/LOC, ALT/ALT*/VS/FPA/CLB/DES/G/S, AP1/AP2, FD, A/THR, CAT. ap_status is a convenience field derived from AP1/AP2 engage readbacks, not parsed from the grid. vertical_mode_raw exposes ToLiss APVerticalMode/APVerticalArmed diagnostics. Example: {'columns': {'col2': {'text': 'OP CLB', 'color': 'green', 'row': 1}}, 'ap_status': {'active': 'AP1'}}."""
     d = _read_map(READ_DREFS["fma"])
     raw = _fma_raw_layers(d)
+    rows = _fma_rows(raw)
     ap1 = _bool(XP.read(READ_DREFS["autoflight"]["ap1"]))
     ap2 = _bool(XP.read(READ_DREFS["autoflight"]["ap2"]))
+    vertical_mode = XP.read(READ_DREFS["autoflight"]["vertical_mode"])
+    vertical_armed = XP.read(READ_DREFS["autoflight"]["vertical_armed"])
     if ap1 and ap2:
         ap_active = "AP1+2"
     elif ap1:
@@ -1048,9 +1158,15 @@ def read_fma() -> dict[str, Any]:
         ap_active = ""
 
     return {
-        "rows": _fma_rows(raw),
+        "rows": rows,
+        "columns": _fma_columns(rows),
         "raw": raw,
         "ap_status": {"active": ap_active, "armed": ""},
+        "vertical_mode_raw": {
+            "active": vertical_mode,
+            "active_label": _vertical_mode_label(vertical_mode),
+            "armed": vertical_armed,
+        },
     }
 
 
@@ -1058,7 +1174,8 @@ def read_fma() -> dict[str, Any]:
 def read_autoflight() -> dict[str, Any]:
     """Read autoflight states. Units: booleans/mode integers. Returns ap1, ap2, athr, fd1, fd2, loc_armed, appr_armed, exped, trk_fpa_mode. Example: {'ap1': True, 'athr': True}."""
     d = _read_map(READ_DREFS["autoflight"])
-    result = {k: (_bool(v) if k not in {"trk_fpa_mode", "vertical_mode"} else v) for k, v in d.items() if k != "vertical_mode"}
+    raw_keys = {"trk_fpa_mode", "vertical_mode", "vertical_armed"}
+    result = {k: (_bool(v) if k not in raw_keys else v) for k, v in d.items() if k != "vertical_mode"}
     vertical_mode = _num(d["vertical_mode"])
     result["exped"] = bool(vertical_mode is not None and vertical_mode > 110)
     return result
@@ -1229,14 +1346,42 @@ def debug_search_xplane_names(term: str) -> dict[str, Any]:
 
 
 @mcp.tool
+def fcu_dial_turn(channel: Literal["spd", "hdg", "alt", "vs"], value: float) -> dict[str, Any]:
+    """Turn an FCU dial without pushing or pulling it. Units: spd kt/Mach raw, hdg deg, alt ft, vs fpm. This writes only the selected dial value and leaves managed/selected mode unchanged. Returns success,before,after,dataref_used,command_used. Example: fcu_dial_turn('alt', 18000)."""
+    return _write_fcu_dial_only(channel, float(value))
+
+
+@mcp.tool
+def fcu_dial_pull(channel: Literal["spd", "hdg", "alt", "vs"], value: float | None = None) -> dict[str, Any]:
+    """Pull an FCU dial. If value is supplied, set that target as part of the action; ALT writes the dial before pull, while SPD/HDG/VS preserve the existing command-before-dial behavior. If value is omitted, only the pull command is sent. Returns success,before,after,dataref_used,command_used. Example: fcu_dial_pull('alt', 18000)."""
+    return _fcu_pull_with_optional_value(channel, None if value is None else float(value))
+
+
+@mcp.tool
+def fcu_dial_push(channel: Literal["spd", "hdg", "alt", "vs"]) -> dict[str, Any]:
+    """Push an FCU dial without writing a target value. Sends the FCU push command only and leaves the dial value unchanged. Returns success,before,after,dataref_used,command_used. Example: fcu_dial_push('hdg')."""
+    return _fcu_command_only(channel, "push")
+
+
+@mcp.tool
 def set_fcu(channel: Literal["spd", "hdg", "alt", "vs"], value: float, managed: bool) -> dict[str, Any]:
-    """Set FCU selected target. Units: spd kt/Mach raw, hdg deg, alt ft, vs fpm. managed=True always sends the FCU push command, False always sends the pull command; ALT writes the dial before push/pull so OP CLB/OP DES sees the new target. Changing an FCU dial does not guarantee aircraft response; AP engagement, side-stick input, current modes, and other external conditions can prevent or alter the actual flight-path response. After calling set_fcu, verify real aircraft motion with read_flight_state, especially hdg, vs, and baro_alt trending toward the target. read_fma mode confirmation is currently not reliable due to known dataref mapping issues, so use read_flight_state as the primary verification method until FMA mapping is fixed. Returns success,before,after,dataref_used,command_used. Example: set_fcu('spd', 250, False)."""
+    """Deprecated compatibility wrapper. Prefer fcu_dial_turn, fcu_dial_pull, and fcu_dial_push. Units: spd kt/Mach raw, hdg deg, alt ft, vs fpm. managed=True sends the FCU push command and writes the dial target, preserving the legacy ALT dial-before-command order and legacy command-before-dial order for other channels; managed=False dispatches to fcu_dial_pull(channel, value). Changing an FCU dial does not guarantee aircraft response; AP engagement, side-stick input, current modes, and other external conditions can prevent or alter the actual flight-path response. After calling, verify real aircraft motion with read_flight_state and mode text with read_fma. Returns success,before,after,dataref_used,command_used. Example: set_fcu('spd', 250, False)."""
+    if managed:
+        first_result = fcu_dial_turn(channel, float(value)) if channel == "alt" else fcu_dial_push(channel)
+        second_result = fcu_dial_push(channel) if channel == "alt" else fcu_dial_turn(channel, float(value))
+        return {
+            "success": bool(first_result.get("success")) and bool(second_result.get("success")),
+            "before": first_result["before"],
+            "after": second_result["after"],
+            "dataref_used": first_result["dataref_used"] + second_result["dataref_used"],
+            "command_used": first_result["command_used"] + second_result["command_used"],
+        }
     if channel == "hdg":
         return _set_fcu_hdg(float(value), managed)
     if channel == "spd":
-        return _set_fcu_direct("spd", float(value), managed, STANDARD_DREFS["fcu_airspeed_dial"])
+        return _set_fcu_spd(float(value), managed)
     if channel == "vs":
-        return _set_fcu_direct("vs", float(value), managed, STANDARD_DREFS["fcu_vs_dial"])
+        return _set_fcu_vs(float(value), managed)
     return _set_fcu_alt(float(value), managed)
 
 
