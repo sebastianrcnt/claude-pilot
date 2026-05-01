@@ -7,6 +7,8 @@ Assumptions:
 - Page selectors such as `AirbusFBW/SDHYD`, `AirbusFBW/SDENG`, `AirbusFBW/SDFUEL`, and `AirbusFBW/SDELEC` are treated as page display or page button state datarefs, not as complete page content.
 - Array index meanings are inferred from Airbus convention and dataref names. Index mappings marked medium or low need live validation.
 - Units are estimated from Airbus SD conventions and dataref names. Unknown units are explicitly marked.
+- STS page is intentionally out of scope: ToLiss does not expose STATUS line text via datarefs.
+- Some datarefs are referenced by multiple pages (e.g., pack switches in BLEED and COND). The implementation should use a time-based shared cache (TTL ~1s) so consecutive `read_sd_*` calls do not re-fetch the same dataref.
 
 ## SD ENG page
 
@@ -113,14 +115,14 @@ Assumptions:
 | AirbusFBW/BleedIntercon | xbleed.interconnect_open | Bleed interconnect state | bool/0-1 | medium |
 | AirbusFBW/LeftBleedPress | duct_pressure.left_psi | Left bleed duct pressure | psi | high |
 | AirbusFBW/RightBleedPress | duct_pressure.right_psi | Right bleed duct pressure | psi | high |
-| AirbusFBW/Pack1Switch | packs[0].switch_on | Pack 1 switch state | bool/0-1 | high |
-| AirbusFBW/Pack2Switch | packs[1].switch_on | Pack 2 switch state | bool/0-1 | high |
+| AirbusFBW/Pack1Switch | packs[0].switch_on | Pack 1 switch state (shared with: COND) | bool/0-1 | high |
+| AirbusFBW/Pack2Switch | packs[1].switch_on | Pack 2 switch state (shared with: COND) | bool/0-1 | high |
 | AirbusFBW/Pack1FCVInd | packs[0].fcv_open | Pack 1 flow control valve indication | bool/0-1 | high |
 | AirbusFBW/Pack2FCVInd | packs[1].fcv_open | Pack 2 flow control valve indication | bool/0-1 | high |
-| AirbusFBW/Pack1Flow | packs[0].flow | Pack 1 flow | normalized/unknown | medium |
-| AirbusFBW/Pack2Flow | packs[1].flow | Pack 2 flow | normalized/unknown | medium |
-| AirbusFBW/Pack1Temp | packs[0].temperature_deg_c | Pack 1 temperature | deg C | high |
-| AirbusFBW/Pack2Temp | packs[1].temperature_deg_c | Pack 2 temperature | deg C | high |
+| AirbusFBW/Pack1Flow | packs[0].flow | Pack 1 flow (shared with: COND) | normalized/unknown | medium |
+| AirbusFBW/Pack2Flow | packs[1].flow | Pack 2 flow (shared with: COND) | normalized/unknown | medium |
+| AirbusFBW/Pack1Temp | packs[0].temperature_deg_c | Pack 1 temperature (shared with: COND) | deg C | high |
+| AirbusFBW/Pack2Temp | packs[1].temperature_deg_c | Pack 2 temperature (shared with: COND) | deg C | high |
 | AirbusFBW/PackFlowSel | pack_flow_selector | Pack flow selector | enum | high |
 | AirbusFBW/RamAirSwitch | ram_air.switch_on | Ram air switch state | bool/0-1 | high |
 | AirbusFBW/RamAirValveSD | ram_air.valve_open | Ram air valve indication on SD | bool/0-1 | high |
@@ -300,6 +302,7 @@ Assumptions:
 {
   "fuel_on_board_kg": null,
   "block_fuel_kg": 7200,
+  "tank_quantity": {"left_kg": null, "right_kg": null, "center_kg": null, "raw": []},
   "engine_fuel_flow": [320, 320],
   "lp_valves_open": [true, true],
   "pumps": {"ohp_raw": [], "sd_auto_raw": []},
@@ -316,6 +319,8 @@ Assumptions:
 |---|---|---|---|---|
 | AirbusFBW/SDFUEL | page_active | FUEL SD page selected/available flag | bool/enum | medium |
 | toliss_airbus/init/BlockFuel | block_fuel_kg | Init block fuel | kg | medium |
+| sim/cockpit2/fuel/fuel_quantity | tank_quantity.raw | Standard X-Plane per-tank fuel quantity fallback; array index mapping aircraft-dependent | kg or lb per X-Plane config | medium |
+| sim/flightmodel/weight/m_fuel | tank_quantity.raw_alt | Standard X-Plane per-tank fuel mass fallback; array index mapping aircraft-dependent | kg | medium |
 | AirbusFBW/ENGFuelFlowArray | engine_fuel_flow[i] | Engine fuel flow, index 0/1 | kg/h or sim unit | medium |
 | AirbusFBW/ENGFuelLPValveArray | lp_valves_open[i] | Engine LP fuel valve state, index 0/1 | bool/0-1 | high |
 | AirbusFBW/FuelPumpOHPArray | pumps.ohp_raw | Fuel pump overhead pushbutton/state array | array bool/enum | high |
@@ -333,13 +338,14 @@ Assumptions:
 
 ### Open questions
 
-- The catalog does not expose obvious per-tank fuel quantity names. Need check whether quantities are only in standard sim datarefs or hidden ToLiss refs.
+- The catalog grep for `FuelQty`, `FuelQuantity`, `TankQty`, `LeftTank`, `RightTank`, `CenterTank`, `OuterTank`, `InnerTank`, `FuelLeft`, `FuelRight`, `FuelCenter`, and `ACT` did not expose ToLiss per-tank quantity datarefs. Use the standard `sim/*` fallbacks until a ToLiss-specific quantity ref is found.
+- Standard fuel quantity array index order must be validated for the A321 tank layout before assigning left/right/center/ACT fields.
 - `FuelPumpOHPArray` and `FuelAutoPumpSDArray` index order needs visual validation.
 - `WriteFOB` naming suggests internal/write candidate; do not use without live validation.
 
 ### Catalog gaps
 
-- No clear left/right/center/trim tank quantity datarefs found in the catalog.
+- No clear left/right/center/ACT tank quantity datarefs found in the ToLiss catalog; use `sim/cockpit2/fuel/fuel_quantity` or `sim/flightmodel/weight/m_fuel` as fallback.
 - No clear FOB, used fuel, or total fuel display dataref found other than low-confidence `WriteFOB`.
 - No explicit fuel temperature dataref found.
 
@@ -423,8 +429,8 @@ Assumptions:
 | AirbusFBW/CockpitTemp | zones.cockpit.temperature_deg_c | Cockpit zone temperature | deg C | high |
 | AirbusFBW/FwdCabinTemp | zones.forward_cabin.temperature_deg_c | Forward cabin zone temperature | deg C | high |
 | AirbusFBW/AftCabinTemp | zones.aft_cabin.temperature_deg_c | Aft cabin zone temperature | deg C | high |
-| AirbusFBW/Zone1Trim | zones.zone1.trim | Zone 1 trim/temperature demand | unknown | medium |
-| AirbusFBW/Zone2Trim | zones.zone2.trim | Zone 2 trim/temperature demand | unknown | medium |
+| AirbusFBW/Zone1Trim | zones.cockpit.trim | Zone 1 trim/temperature demand; standard A321 convention maps Zone 1 to cockpit | unknown | medium |
+| AirbusFBW/Zone2Trim | zones.forward_cabin.trim | Zone 2 trim/temperature demand; standard A321 convention maps Zone 2 to forward cabin | unknown | medium |
 | AirbusFBW/FwdCargoTemp | cargo.forward_temp_deg_c | Forward cargo temperature | deg C | high |
 | AirbusFBW/AftCargoTemp | cargo.aft_temp_deg_c | Aft cargo temperature | deg C | high |
 | AirbusFBW/BulkCargoTemp | cargo.bulk_temp_deg_c | Bulk cargo temperature | deg C | high |
@@ -433,17 +439,18 @@ Assumptions:
 | AirbusFBW/HotAirSwitch2 | hot_air.switch2 | Hot air switch 2 state | bool/enum | high |
 | AirbusFBW/HotAirValve | hot_air.valve_open | Hot air valve state | bool/0-1 | high |
 | AirbusFBW/HotAirSwitchIllum | hot_air.switch_lights | Hot air switch illumination/fault | enum | medium |
-| AirbusFBW/Pack1Switch | packs[0].switch_on | Pack 1 switch state | bool/0-1 | high |
-| AirbusFBW/Pack2Switch | packs[1].switch_on | Pack 2 switch state | bool/0-1 | high |
-| AirbusFBW/Pack1Flow | packs[0].flow | Pack 1 flow | normalized/unknown | medium |
-| AirbusFBW/Pack2Flow | packs[1].flow | Pack 2 flow | normalized/unknown | medium |
-| AirbusFBW/Pack1Temp | packs[0].temperature_deg_c | Pack 1 temperature | deg C | high |
-| AirbusFBW/Pack2Temp | packs[1].temperature_deg_c | Pack 2 temperature | deg C | high |
+| AirbusFBW/Pack1Switch | packs[0].switch_on | Pack 1 switch state (shared with: BLEED) | bool/0-1 | high |
+| AirbusFBW/Pack2Switch | packs[1].switch_on | Pack 2 switch state (shared with: BLEED) | bool/0-1 | high |
+| AirbusFBW/Pack1Flow | packs[0].flow | Pack 1 flow (shared with: BLEED) | normalized/unknown | medium |
+| AirbusFBW/Pack2Flow | packs[1].flow | Pack 2 flow (shared with: BLEED) | normalized/unknown | medium |
+| AirbusFBW/Pack1Temp | packs[0].temperature_deg_c | Pack 1 temperature (shared with: BLEED) | deg C | high |
+| AirbusFBW/Pack2Temp | packs[1].temperature_deg_c | Pack 2 temperature (shared with: BLEED) | deg C | high |
 | AirbusFBW/airCondPanelConfig | panel_config | Air conditioning panel configuration | enum | low |
 
 ### Open questions
 
-- `Zone1Trim` and `Zone2Trim` need mapping to cockpit/fwd/aft zones.
+- `Zone1Trim` and `Zone2Trim` are mapped by standard A321 convention to cockpit and forward cabin, but live validation is still required.
+- No `AirbusFBW/Zone3Trim` catalog entry was found for aft cabin trim; determine whether aft cabin trim is hidden, derived, or represented by another dataref.
 - Whether the A321 has separate bulk cargo display depends on option/config.
 - `Pack*Temp` may be pack outlet temp rather than displayed zone supply temp.
 
@@ -630,52 +637,6 @@ Assumptions:
 - No clear ELAC/SEC/FAC named status datarefs; only generic arrays.
 - No explicit flight control law status dataref in the SD page candidates.
 
-## SD STS page
-
-### Proposed read_sd_sts() response structure
-
-```json
-{
-  "status_page_active": true,
-  "fault_count": 0,
-  "faults": {
-    "current_index": null,
-    "system_index": null,
-    "phase": null,
-    "trigger_condition": null,
-    "trigger_parameter": null
-  },
-  "tcas_status": null,
-  "raw": {}
-}
-```
-
-### Dataref mappings
-
-| Dataref | Field path | Estimated meaning | Unit | Confidence |
-|---|---|---|---|---|
-| AirbusFBW/SDSTATUS | status_page_active | STATUS SD page selected/available flag | bool/enum | medium |
-| toliss_airbus/faultinjection/numberOfFaults_rw | fault_count | Number of injected/defined faults | count | medium |
-| toliss_airbus/faultinjection/fault_index_rw | faults.current_index | Fault selection/index | index | medium |
-| toliss_airbus/faultinjection/fault_system_index_ro | faults.system_index | Fault system index | index | medium |
-| toliss_airbus/faultinjection/fault_phase_rw | faults.phase | Fault phase | enum | medium |
-| toliss_airbus/faultinjection/trigger_condition_rw | faults.trigger_condition | Fault trigger condition | enum | medium |
-| toliss_airbus/faultinjection/trigger_parameter_rw | faults.trigger_parameter | Fault trigger parameter | unknown | low |
-| toliss_airbus/faultinjection/arm_all_defined_Faults | faults.arm_all_defined | Fault arming flag | bool/0-1 | low |
-| AirbusFBW/TCASStatus | tcas_status | TCAS status; may appear in status/failure context | enum | low |
-
-### Open questions
-
-- STATUS page contents may not be exposed as user-facing text or structured system messages.
-- Fault injection datarefs may describe failure setup UI rather than active ECAM status.
-- Need determine if ToLiss exposes active ECAM STATUS lines elsewhere outside catalog.
-
-### Catalog gaps
-
-- No clear active STATUS page message list datarefs found.
-- No clear INOP SYS list datarefs found.
-- No clear deferred procedure/limitations text datarefs found.
-
 ## SD CRZ page
 
 ### Proposed read_sd_crz() response structure
@@ -690,37 +651,18 @@ Assumptions:
 }
 ```
 
-### Dataref mappings
+### Implementation note
 
-| Dataref | Field path | Estimated meaning | Unit | Confidence |
-|---|---|---|---|---|
-| AirbusFBW/CabinAlt | cabin.altitude_ft | Cabin altitude | ft | high |
-| AirbusFBW/CabinVS | cabin.vertical_speed_fpm | Cabin vertical speed | ft/min | high |
-| AirbusFBW/CabinDeltaP | cabin.delta_p_psi | Cabin differential pressure | psi | high |
-| AirbusFBW/CockpitTemp | temperatures.cockpit_deg_c | Cockpit temperature | deg C | high |
-| AirbusFBW/FwdCabinTemp | temperatures.forward_cabin_deg_c | Forward cabin temperature | deg C | high |
-| AirbusFBW/AftCabinTemp | temperatures.aft_cabin_deg_c | Aft cabin temperature | deg C | high |
-| AirbusFBW/ENGFuelFlowArray | fuel.engine_flow[i] | Engine fuel flow | kg/h or sim unit | medium |
-| toliss_airbus/init/BlockFuel | fuel.block_fuel_kg | Init block fuel | kg | medium |
-| AirbusFBW/CGLocationPercent | weight_balance.cg_percent | Current CG location | % MAC | high |
-| AirbusFBW/FMSCGLocation | weight_balance.fms_cg_percent | FMS CG location | % MAC | high |
-| toliss_airbus/init/ZFWCG | weight_balance.zfwcg_percent | Zero fuel weight CG | % MAC | high |
-| toliss_airbus/init/cruise_alt | cruise.init_cruise_alt_ft | Init cruise altitude | ft | high |
-| toliss_airbus/pfdoutputs/general/cruise_cas_presel | cruise.cas_presel | Cruise CAS preselect | kt | high |
-| toliss_airbus/pfdoutputs/general/cruise_mach_presel | cruise.mach_presel | Cruise Mach preselect | Mach | high |
-| toliss_airbus/performance/DestTemp | destination.temperature_deg_c | Destination temperature | deg C | high |
-| AirbusFBW/Pack1Temp | packs[0].temperature_deg_c | Pack 1 temperature, optional CRZ support | deg C | medium |
-| AirbusFBW/Pack2Temp | packs[1].temperature_deg_c | Pack 2 temperature, optional CRZ support | deg C | medium |
+`read_sd_crz()` should be implemented as a composition of other `read_sd_*` calls (`read_sd_press`, `read_sd_cond`, `read_sd_fuel`, `read_sd_eng`), not direct dataref mapping. Reuse cached values to avoid redundant reads.
 
 ### Open questions
 
-- There is no explicit `SDCRZ` page selector in the catalog found by grep; CRZ may be automatic or represented through another page mode.
-- CRZ page layout differs by flight phase; expose fields as nullable rather than requiring a page-active flag.
-- Fuel-on-board value remains unresolved from catalog-only datarefs.
+- Confirm which composed fields best match the ToLiss CRZ graphic in cruise versus non-cruise phases.
+- Decide whether `read_sd_crz()` should expose a `page_active` field. CRZ has no ECP button and is normally phase-driven, so a direct active flag is likely unavailable.
+- Ensure composed calls share a TTL cache so cabin pressure, pack temperatures, fuel, and engine flow are not fetched repeatedly.
 
 ### Catalog gaps
 
-- No `AirbusFBW/SDCRZ` dataref found.
-- No clear total FOB or fuel used dataref found.
-- No clear SAT/TAT datarefs found in the catalog search for CRZ support.
-
+- No `AirbusFBW/SDCRZ` selector dataref found, which is expected because CRZ is not an ECP button page.
+- No standalone CRZ page content datarefs found; use composed page readers.
+- Any missing values should be inherited from the source page gaps, especially FUEL total/per-tank quantities and ENG oil/vibration details.
