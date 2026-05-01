@@ -28,6 +28,9 @@ The server uses `toliss_a321_catalog.json` for ToLiss/AirbusFBW names and direct
 - ✅ `read_ecam`: decodes ToLiss fixed-length byte-array ECAM text datarefs returned by the Web API as base64, including EWD `AirbusFBW/EWD{N}{color}Text` and SD `AirbusFBW/SDline{N}{color}` patterns. It strips null padding, omits empty color slots, preserves multiple color segments per line, and keeps `current_sd_page`.
 - ✅ `read_mcdu`: MCDU1/MCDU2 display decoding from `AirbusFBW/MCDU{1|2}{title|stitle|labelN|contN|scontN|sp}{color}` datarefs, including top-level scratchpad text.
 - ✅ `mcdu_press`: MCDU1/MCDU2 key command mapping from catalog entries such as `AirbusFBW/MCDU1KeyA`, `AirbusFBW/MCDU1LSK1L`, `AirbusFBW/MCDU1DirTo`, and `AirbusFBW/MCDU1SlewRight`. Supports text decomposition, LSK follow-up, and 50 ms command spacing.
+- ✅ SD page read tools: `read_sd_eng`, `read_sd_bleed`, `read_sd_press`, `read_sd_elec`, `read_sd_hyd`, `read_sd_fuel`, `read_sd_apu`, `read_sd_cond`, `read_sd_door`, `read_sd_wheel`, `read_sd_fctl`, and synthetic `read_sd_crz` are implemented from `sd_pages_spec.md`.
+- ✅ Shared dataref cache: all `XP.read()` calls use a module-level 1 second TTL cache, shared across tools; direct writes invalidate the written dataref and command execution clears the cache.
+- ✅ SD STS is intentionally excluded because ToLiss does not expose STATUS line text via datarefs.
 
 ## Remaining
 
