@@ -182,6 +182,7 @@ READ_DREFS: dict[str, dict[str, str]] = {
             "appr_armed": "AirbusFBW/APPRilluminated",
             "vertical_armed": "AirbusFBW/APVerticalArmed",
             "vertical_mode": "AirbusFBW/APVerticalMode",
+            "athr_thrust_mode": "toliss_airbus/pfdoutputs/general/athr_thrust_mode",
             "trk_fpa_mode": "AirbusFBW/HDGTRKmode",
         }
     ),
@@ -193,6 +194,9 @@ READ_DREFS: dict[str, dict[str, str]] = {
             "oil_press": "AirbusFBW/ENGOilPressArray",
             "master_switch": "AirbusFBW/anim/ENGMasterSwitch",
             "mode_selector": "AirbusFBW/ENGModeSwitch",
+            "thrust_rating_type": "AirbusFBW/THRRatingType",
+            "thrust_rating_n1": "AirbusFBW/THRRatingN1",
+            "thrust_rating_epr": "AirbusFBW/THRRatingEPR",
         }
     ),
     "overhead": _m(
@@ -942,6 +946,14 @@ VERTICAL_MODE_LABELS = {
     104: "ALT",
     107: "VS",
 }
+THRUST_RATING_TYPE_LABELS = {
+    # Observed live: 1 corresponds to the EWD CLB rating.
+    1: "CLB",
+}
+ATHR_THRUST_MODE_LABELS = {
+    # Observed live with FMA col1 SPEED.
+    0: "SPEED",
+}
 
 
 def _fma_cell(layer_text: str, column: str) -> str:
@@ -997,6 +1009,13 @@ def _vertical_mode_label(value: Any) -> str | None:
     if raw is None:
         return None
     return VERTICAL_MODE_LABELS.get(int(raw))
+
+
+def _enum_label(labels: dict[int, str], value: Any) -> str | None:
+    raw = _num(value)
+    if raw is None:
+        return None
+    return labels.get(int(raw))
 
 
 def _write_result(read_fn: Callable[[], dict[str, Any]], action: Callable[[], None], used: list[str]) -> dict[str, Any]:
@@ -1155,7 +1174,7 @@ def read_fcu() -> dict[str, Any]:
 
 @mcp.tool
 def read_fma() -> dict[str, Any]:
-    """Read raw ToLiss PFD FMA text grid. Returns rows with 3 fixed-width display rows, 5 positional columns (col1..col5), decoded text, and display color; columns is a row-precedence convenience view where active row 1 text wins over armed/status rows. Use columns.col2 for reliable vertical mode; rows exposes raw color layers and may be inconsistent. raw preserves each ToLiss color-layer dataref as fixed-width text for debugging/reparsing. General Airbus FMA convention: col1 often carries A/THR modes, col2 vertical modes, col3 lateral modes, col4 approach/common annunciations, and col5 AP/FD/A-THR/CAT status, but callers should interpret text rather than rely on column names as semantics. Colors usually mean green=active, cyan/blue=armed/constraint, white=info/status, amber=warning/caution, magenta=managed/target guidance. Common texts include SPEED/MACH, HDG/TRK/NAV/LOC, ALT/ALT*/VS/FPA/CLB/DES/G/S, AP1/AP2, FD, A/THR, CAT. ap_status is a convenience field derived from AP1/AP2 engage readbacks, not parsed from the grid. vertical_mode_raw exposes ToLiss APVerticalMode/APVerticalArmed diagnostics. Example: {'columns': {'col2': {'text': 'OP CLB', 'color': 'green', 'row': 1}}, 'ap_status': {'active': 'AP1'}}."""
+    """Read raw ToLiss PFD FMA text grid. Returns rows with 3 fixed-width display rows, 5 positional columns (col1..col5), decoded text, and display color; columns is a row-precedence convenience view where active row 1 text wins over armed/status rows. Use columns.col2 for reliable vertical mode; rows exposes raw color layers and may be inconsistent. raw preserves each ToLiss color-layer dataref as fixed-width text for debugging/reparsing. General Airbus FMA convention: col1 often carries A/THR modes, col2 vertical modes, col3 lateral modes, col4 approach/common annunciations, and col5 AP/FD/A-THR/CAT status, but callers should interpret text rather than rely on column names as semantics. Colors usually mean green=active, cyan/blue=armed/constraint, white=info/status, amber=warning/caution, magenta=managed/target guidance. Common texts include SPEED/MACH, HDG/TRK/NAV/LOC, ALT/ALT*/VS/FPA/CLB/DES/G/S, AP1/AP2, FD, A/THR, CAT. ap_status is a convenience field derived from AP1/AP2 engage readbacks, not parsed from the grid. athr_mode exposes ToLiss pfdoutputs/general/athr_thrust_mode separately from the visible FMA text. vertical_mode_raw exposes ToLiss APVerticalMode/APVerticalArmed diagnostics. Example: {'columns': {'col2': {'text': 'OP CLB', 'color': 'green', 'row': 1}}, 'ap_status': {'active': 'AP1'}}."""
     d = _read_map(READ_DREFS["fma"])
     raw = _fma_raw_layers(d)
     rows = _fma_rows(raw)
@@ -1163,6 +1182,7 @@ def read_fma() -> dict[str, Any]:
     ap2 = _bool(XP.read(READ_DREFS["autoflight"]["ap2"]))
     vertical_mode = XP.read(READ_DREFS["autoflight"]["vertical_mode"])
     vertical_armed = XP.read(READ_DREFS["autoflight"]["vertical_armed"])
+    athr_thrust_mode = XP.read(READ_DREFS["autoflight"]["athr_thrust_mode"])
     if ap1 and ap2:
         ap_active = "AP1+2"
     elif ap1:
@@ -1177,6 +1197,10 @@ def read_fma() -> dict[str, Any]:
         "columns": _fma_columns(rows),
         "raw": raw,
         "ap_status": {"active": ap_active, "armed": ""},
+        "athr_mode": {
+            "mode": _enum_label(ATHR_THRUST_MODE_LABELS, athr_thrust_mode),
+            "raw": athr_thrust_mode,
+        },
         "vertical_mode_raw": {
             "active": vertical_mode,
             "active_label": _vertical_mode_label(vertical_mode),
@@ -1189,7 +1213,7 @@ def read_fma() -> dict[str, Any]:
 def read_autoflight() -> dict[str, Any]:
     """Read autoflight states. Units: booleans/mode integers. Returns ap1, ap2, athr, fd1, fd2, loc_armed, appr_armed, exped, trk_fpa_mode. Example: {'ap1': True, 'athr': True}."""
     d = _read_map(READ_DREFS["autoflight"])
-    raw_keys = {"trk_fpa_mode", "vertical_mode", "vertical_armed"}
+    raw_keys = {"trk_fpa_mode", "vertical_mode", "vertical_armed", "athr_thrust_mode"}
     result = {k: (_bool(v) if k not in raw_keys else v) for k, v in d.items() if k != "vertical_mode"}
     vertical_mode = _num(d["vertical_mode"])
     result["exped"] = bool(vertical_mode is not None and vertical_mode > 110)
@@ -1198,7 +1222,7 @@ def read_autoflight() -> dict[str, Any]:
 
 @mcp.tool
 def read_engines() -> dict[str, Any]:
-    """Read engine 1/2 indications. Units: percent, deg C, kg/s (X-Plane native dataref; x3600 = kg/h), psi. Returns eng list with n1, n2, egt, ff, oil_temp, oil_press, master_switch, mode_selector. Example: {'eng': [{'n1': 22.1}]}."""
+    """Read engine 1/2 indications. Units: percent, deg C, kg/s (X-Plane native dataref; x3600 = kg/h), psi. Returns eng list with n1, n2, egt, ff, oil_temp, oil_press, master_switch, mode_selector, plus thrust_rating with EWD rating type and N1/EPR limits. Example: {'eng': [{'n1': 22.1}], 'thrust_rating': {'type': 'CLB', 'n1_limit': 90.3}}."""
     d = _read_map(READ_DREFS["engines"])
     n2 = _read_std("engine_n2")
     oil_temp = _read_std("engine_oil_temp")
@@ -1216,7 +1240,16 @@ def read_engines() -> dict[str, Any]:
                 "mode_selector": d["mode_selector"],
             }
         )
-    return {"eng": engines}
+    rating_type = d["thrust_rating_type"]
+    return {
+        "eng": engines,
+        "thrust_rating": {
+            "type": _enum_label(THRUST_RATING_TYPE_LABELS, rating_type),
+            "raw_type": rating_type,
+            "n1_limit": d["thrust_rating_n1"],
+            "epr_limit": d["thrust_rating_epr"],
+        },
+    }
 
 
 @mcp.tool
