@@ -2,6 +2,7 @@
 
 from typing import Any
 
+from .common import MappingError
 from .server import XP, _bool, _idx, _num, mcp
 
 def _sd_read(name: str, default: Any = None) -> Any:

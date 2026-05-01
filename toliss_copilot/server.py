@@ -9,11 +9,14 @@ ToLiss aircraft, or mapped datarefs/commands are unavailable.
 from __future__ import annotations
 
 import base64
+import asyncio
 import json
 import math
 import time
 from pathlib import Path
 from typing import Any, Callable, Literal
+
+from .common import MappingError, ToLissNotLoadedError, XPlaneUnavailableError
 
 try:
     import httpx
@@ -45,18 +48,6 @@ ROOT = Path(__file__).resolve().parent.parent
 CATALOG_PATH = ROOT / "toliss_a321_catalog.json"
 
 mcp = FastMCP("toliss-a321-copilot")
-
-
-class XPlaneUnavailableError(RuntimeError):
-    pass
-
-
-class ToLissNotLoadedError(RuntimeError):
-    pass
-
-
-class MappingError(NotImplementedError):
-    pass
 
 
 def _load_catalog() -> dict[str, dict[str, Any]]:
@@ -1596,6 +1587,60 @@ def set_weather_radar(name: Literal["mode", "gain", "tilt", "multiscan", "gcs"],
     dref = WRITE_DREFS[key]
     val = {"off": 0, "std": 1, "wx": 2, "wx+t": 3, "turb": 4, "map": 5, "on": 1, "true": 1, "off": 0, "false": 0}.get(str(value).lower(), value)
     return _write_result(read_weather_radar, lambda: XP.write(dref, val), [dref])
+
+
+def smoke_test(live: bool = False) -> dict[str, Any]:
+    """Import/list-tool smoke test, with optional live read_* calls when X-Plane is running."""
+    from . import displays, sd_pages
+
+    async def list_tool_names() -> list[str]:
+        tools = await mcp.list_tools()
+        return sorted(getattr(tool, "name", "") for tool in tools)
+
+    tool_names = asyncio.run(list_tool_names())
+    result: dict[str, Any] = {"import_ok": True, "tool_count": len(tool_names), "tools": tool_names}
+    if not live:
+        return result
+
+    read_calls: dict[str, Callable[[], Any]] = {
+        "read_flight_state": read_flight_state,
+        "read_fcu": read_fcu,
+        "read_fma": read_fma,
+        "read_autoflight": read_autoflight,
+        "read_engines": read_engines,
+        "read_overhead_full": read_overhead_full,
+        "read_pedestal": read_pedestal,
+        "read_radios": read_radios,
+        "read_atc": read_atc,
+        "read_ecam_ewd": lambda: displays.read_ecam("ewd"),
+        "read_ecam_sd": lambda: displays.read_ecam("sd"),
+        "read_mcdu_capt": lambda: displays.read_mcdu("capt"),
+        "read_mcdu_fo": lambda: displays.read_mcdu("fo"),
+        "read_efis_capt": lambda: read_efis("capt"),
+        "read_efis_fo": lambda: read_efis("fo"),
+        "read_weather_radar": read_weather_radar,
+        "read_sd_eng": sd_pages.read_sd_eng,
+        "read_sd_bleed": sd_pages.read_sd_bleed,
+        "read_sd_press": sd_pages.read_sd_press,
+        "read_sd_elec": sd_pages.read_sd_elec,
+        "read_sd_hyd": sd_pages.read_sd_hyd,
+        "read_sd_fuel": sd_pages.read_sd_fuel,
+        "read_sd_apu": sd_pages.read_sd_apu,
+        "read_sd_cond": sd_pages.read_sd_cond,
+        "read_sd_door": sd_pages.read_sd_door,
+        "read_sd_wheel": sd_pages.read_sd_wheel,
+        "read_sd_fctl": sd_pages.read_sd_fctl,
+        "read_sd_crz": sd_pages.read_sd_crz,
+    }
+    live_results: dict[str, str] = {}
+    for name, fn in read_calls.items():
+        try:
+            fn()
+            live_results[name] = "ok"
+        except Exception as exc:
+            live_results[name] = f"{type(exc).__name__}: {exc}"
+    result["live_reads"] = live_results
+    return result
 
 
 if __name__ == "__main__":

@@ -23,6 +23,27 @@ python toliss_copilot_mcp.py
 
 The module imports without X-Plane running. Tool calls load the Web API dataref/command ID cache once and then use IDs directly.
 
+## Refactor Smoke Tests
+
+After moving tools between modules, run the import/tool-registration smoke test:
+
+```powershell
+python -c "import toliss_copilot_mcp; print(toliss_copilot_mcp.smoke_test())"
+```
+
+With X-Plane and the ToLiss aircraft running, run live read-tool smoke checks:
+
+```powershell
+python -c "import toliss_copilot_mcp; print(toliss_copilot_mcp.smoke_test(live=True))"
+```
+
+For undefined-name static checks:
+
+```powershell
+python -m pip install ruff
+python -m ruff check --select F821 .
+```
+
 ## Claude Code MCP
 
 Example registration:

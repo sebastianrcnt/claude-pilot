@@ -1,28 +1,13 @@
 ﻿from __future__ import annotations
 
-import base64
+import time
 from typing import Any, Literal
 
-from .server import CATALOG, COMMANDS, MappingError, XP, _known, mcp
+from .common import MappingError, decode_toliss_text
+from .server import CATALOG, COMMANDS, XP, _known, mcp
 
 def _decode_toliss_text(value: Any) -> str:
-    if value is None:
-        return ""
-    if isinstance(value, str):
-        try:
-            raw = base64.b64decode(value, validate=True)
-            return raw.rstrip(b"\x00").decode("ascii", errors="replace").rstrip()
-        except Exception:
-            return value.rstrip("\x00").rstrip()
-    if isinstance(value, list):
-        try:
-            raw = bytes(int(item) & 0xFF for item in value)
-            return raw.rstrip(b"\x00").decode("ascii", errors="replace").rstrip()
-        except Exception:
-            return ""
-    if isinstance(value, bytes):
-        return value.rstrip(b"\x00").decode("ascii", errors="replace").rstrip()
-    return str(value).rstrip("\x00").rstrip()
+    return decode_toliss_text(value)
 
 
 ECAM_COLORS = {"w": "white", "g": "green", "b": "blue", "a": "amber", "r": "red"}
