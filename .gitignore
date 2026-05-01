@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Local/editor files
+.env
+.env.*
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Generated debug logs
+parse_skipped.log
+*.tmp
+
+# Cloned upstream input repositories.
+# Re-clone with:
+#   git clone https://github.com/iolivergithub/TolissXKeyPadHelper sources/TolissXKeyPadHelper
+#   git clone https://github.com/dualznz/toliss-a430-datarefs sources/toliss-a430-datarefs
+sources/
