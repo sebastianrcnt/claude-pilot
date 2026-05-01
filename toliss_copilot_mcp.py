@@ -889,6 +889,33 @@ def _colored_lines(prefix: str, max_lines: int) -> list[dict[str, Any]]:
     return out
 
 
+MCDU_COLORS = {
+    "w": "white",
+    "g": "green",
+    "b": "blue",
+    "a": "amber",
+    "m": "magenta",
+    "s": "cyan",
+    "y": "yellow",
+}
+
+
+def _mcdu_segments(mcdu: int, parts: list[str]) -> list[dict[str, str]]:
+    segments: list[dict[str, str]] = []
+    for part in parts:
+        for suffix, color in MCDU_COLORS.items():
+            name = f"AirbusFBW/MCDU{mcdu}{part}{suffix}"
+            if name not in CATALOG:
+                continue
+            try:
+                text = _decode_toliss_text(XP.read(name))
+            except Exception:
+                text = ""
+            if text:
+                segments.append({"text": text, "color": color})
+    return segments
+
+
 @mcp.tool
 def read_ecam(side: Literal["ewd", "sd"]) -> dict[str, Any]:
     """Read ECAM text. Units: decoded ASCII text and color names. side='ewd' or 'sd'. Returns lines with line,color,text and current_sd_page for sd. Example: {'lines': [{'line': 1, 'text': 'APU AVAIL', 'color': 'green'}]}."""
@@ -896,6 +923,32 @@ def read_ecam(side: Literal["ewd", "sd"]) -> dict[str, Any]:
         return {"lines": _colored_lines("EWD", 7), "current_sd_page": None}
     page = XP.read(_known("AirbusFBW/SDPage"))
     return {"lines": _colored_lines("SD", 18), "current_sd_page": page}
+
+
+@mcp.tool
+def read_mcdu(side: Literal["capt", "fo"]) -> dict[str, Any]:
+    """Read MCDU display text only. Units: decoded ASCII, 0-based screen lines, color names. side='capt' for MCDU1 or 'fo' for MCDU2. Returns side and 14 line objects with type and text/color segments. Example: {'side': 'capt', 'lines': [{'line': 0, 'type': 'title', 'segments': [{'text': 'INIT', 'color': 'white'}]}]}."""
+    mcdu = 1 if side == "capt" else 2
+    lines: list[dict[str, Any]] = [
+        {"line": 0, "type": "title", "segments": _mcdu_segments(mcdu, ["title", "stitle"])},
+    ]
+    for pair in range(1, 7):
+        lines.append(
+            {
+                "line": pair * 2 - 1,
+                "type": "label",
+                "segments": _mcdu_segments(mcdu, [f"label{pair}"]),
+            }
+        )
+        lines.append(
+            {
+                "line": pair * 2,
+                "type": "content",
+                "segments": _mcdu_segments(mcdu, [f"cont{pair}", f"scont{pair}"]),
+            }
+        )
+    lines.append({"line": 13, "type": "scratchpad", "segments": _mcdu_segments(mcdu, ["sp"])})
+    return {"side": side, "lines": lines}
 
 
 @mcp.tool
