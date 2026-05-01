@@ -715,32 +715,40 @@ def _set_fcu_direct(
     dial_dref: str,
     *,
     normalize: Callable[[float], float] | None = None,
+    command_after_dial: bool = False,
 ) -> dict[str, Any]:
     original_before = read_fcu()
     before = original_before
     command_used: list[str] = []
+    dataref_used: list[str] = []
     target = normalize(target) if normalize else float(target)
     current = _num(before[channel]["value"])
     if current is None:
         raise MappingError(f"set_fcu('{channel}') requires a working FCU readback before direct control can be used.")
     current = normalize(float(current)) if normalize else float(current)
 
-    # FCU push/pull is a physical action, not just a request for the managed flag
-    # to equal a target state. For example, pulling ALT while already selected
-    # and holding ALT can trigger OP CLB/OP DES, so never skip this command based
-    # only on the current managed readback.
     cmd = COMMANDS[f"{channel}_{'push' if desired_managed else 'pull'}"]
-    XP.command(cmd)
-    command_used.append(cmd)
-    DATAREF_VALUE_CACHE.clear()
-    time.sleep(0.15)
-    before = read_fcu()
-    current = _num(before[channel]["value"])
-    if current is None:
-        raise MappingError(f"set_fcu('{channel}') requires a working FCU readback before direct control can be used.")
-    current = normalize(float(current)) if normalize else float(current)
+    if not command_after_dial:
+        # FCU push/pull is a physical action, not just a request for the managed
+        # flag to equal a target state. Never skip it based only on managed
+        # readback.
+        XP.command(cmd)
+        command_used.append(cmd)
+        DATAREF_VALUE_CACHE.clear()
+        time.sleep(0.15)
+        before = read_fcu()
+        current = _num(before[channel]["value"])
+        if current is None:
+            raise MappingError(f"set_fcu('{channel}') requires a working FCU readback before direct control can be used.")
+        current = normalize(float(current)) if normalize else float(current)
 
     if _fcu_value_close(channel, current, target):
+        if command_after_dial:
+            XP.command(cmd)
+            command_used.append(cmd)
+            DATAREF_VALUE_CACHE.clear()
+            time.sleep(0.15)
+            before = read_fcu()
         return {
             "success": True,
             "before": original_before,
@@ -755,7 +763,14 @@ def _set_fcu_direct(
     dial_value = normalize(float(dial_raw)) if normalize else float(dial_raw)
     dial_target = _fcu_direct_target(channel, current, target, dial_value)
     XP.write(dial_dref, dial_target)
+    dataref_used.append(dial_dref)
     DATAREF_VALUE_CACHE.clear()
+    if command_after_dial:
+        # ALT hold needs the selected altitude changed before the pull/push
+        # action; pulling at the old target can leave the FMA in ALT.
+        XP.command(cmd)
+        command_used.append(cmd)
+        DATAREF_VALUE_CACHE.clear()
     time.sleep(0.25)
     after = read_fcu()
     actual = _num(after[channel]["value"])
@@ -765,7 +780,7 @@ def _set_fcu_direct(
             "success": True,
             "before": original_before,
             "after": after,
-            "dataref_used": [dial_dref],
+            "dataref_used": dataref_used,
             "command_used": command_used,
         }
         result["dial"] = {"before": dial_value, "after": dial_target, "display_offset": current - dial_value}
@@ -784,7 +799,7 @@ def _set_fcu_alt(target: float, desired_managed: bool) -> dict[str, Any]:
         XP.write(step_dref, 1 if float(target) % 1000 == 0 else 0)
         DATAREF_VALUE_CACHE.clear()
         step_used.append(step_dref)
-    result = _set_fcu_direct("alt", target, desired_managed, STANDARD_DREFS["fcu_altitude_dial"])
+    result = _set_fcu_direct("alt", target, desired_managed, STANDARD_DREFS["fcu_altitude_dial"], command_after_dial=True)
     result["dataref_used"] = step_used + result["dataref_used"]
     return result
 
@@ -1215,7 +1230,7 @@ def debug_search_xplane_names(term: str) -> dict[str, Any]:
 
 @mcp.tool
 def set_fcu(channel: Literal["spd", "hdg", "alt", "vs"], value: float, managed: bool) -> dict[str, Any]:
-    """Set FCU selected target. Units: spd kt/Mach raw, hdg deg, alt ft, vs fpm. managed=True always sends the FCU push command, False always sends the pull command, then writes the FCU dial value. Changing an FCU dial does not guarantee aircraft response; AP engagement, side-stick input, current modes, and other external conditions can prevent or alter the actual flight-path response. After calling set_fcu, verify real aircraft motion with read_flight_state, especially hdg, vs, and baro_alt trending toward the target. read_fma mode confirmation is currently not reliable due to known dataref mapping issues, so use read_flight_state as the primary verification method until FMA mapping is fixed. Returns success,before,after,dataref_used,command_used. Example: set_fcu('spd', 250, False)."""
+    """Set FCU selected target. Units: spd kt/Mach raw, hdg deg, alt ft, vs fpm. managed=True always sends the FCU push command, False always sends the pull command; ALT writes the dial before push/pull so OP CLB/OP DES sees the new target. Changing an FCU dial does not guarantee aircraft response; AP engagement, side-stick input, current modes, and other external conditions can prevent or alter the actual flight-path response. After calling set_fcu, verify real aircraft motion with read_flight_state, especially hdg, vs, and baro_alt trending toward the target. read_fma mode confirmation is currently not reliable due to known dataref mapping issues, so use read_flight_state as the primary verification method until FMA mapping is fixed. Returns success,before,after,dataref_used,command_used. Example: set_fcu('spd', 250, False)."""
     if channel == "hdg":
         return _set_fcu_hdg(float(value), managed)
     if channel == "spd":
