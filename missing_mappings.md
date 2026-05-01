@@ -100,7 +100,8 @@ The server uses `toliss_a321_catalog.json` for ToLiss/AirbusFBW names and direct
 
 ## set_pedestal
 
-- `speedbrake`: readback still uses deployed-state dataref candidate rather than a confirmed handle-position dataref.
+- `speedbrake.armed`: no confirmed armed-state readback dataref is mapped. `set_pedestal("speedbrake", "armed"|"disarmed")` intentionally raises `MappingError` until `debug_search_xplane_names("speedbrake")` or `"spoiler"` identifies a reliable readback dataref.
+- `speedbrake`: numeric handle readback still uses deployed-state dataref candidate rather than a confirmed handle-position dataref.
 - Autobrake uses the ToLiss indicator/button pattern. The only readable indicators found are `AirbusFBW/ABrkLoButtonAnim`, `AirbusFBW/ABrkMedButtonAnim`, and `AirbusFBW/ABrkMaxButtonAnim`. Local verification fired commands successfully, but indicators stayed off in the current aircraft state, likely due ToLiss logic/condition gating.
 
 ## set_efis

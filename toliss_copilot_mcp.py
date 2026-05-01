@@ -588,6 +588,25 @@ def _read_flap_handle() -> int | None:
     return None if flap_ratio is None else int(round(max(0.0, min(1.0, float(flap_ratio))) * 4))
 
 
+def _speedbrake_armed_dref() -> str | None:
+    return _catalog_dataref(
+        "AirbusFBW/SpeedbrakeArmed",
+        "AirbusFBW/SpdBrakeArmed",
+        "AirbusFBW/SpeedBrakeArmed",
+        "AirbusFBW/SpoilersArmed",
+        "AirbusFBW/SpoilerArmed",
+        "AirbusFBW/SpeedbrakeArm",
+        "AirbusFBW/SpdBrakeArm",
+    )
+
+
+def _read_speedbrake_armed() -> bool | None:
+    dref = _speedbrake_armed_dref()
+    if not dref:
+        return None
+    return _bool(XP.read(dref))
+
+
 def _not_impl(tool: str, missing: list[str]) -> None:
     raise MappingError(f"{tool} is not implemented because catalog mappings are missing: {', '.join(missing)}")
 
@@ -598,6 +617,17 @@ def _write_result(read_fn: Callable[[], dict[str, Any]], action: Callable[[], No
     time.sleep(0.15)
     after = read_fn()
     return {"success": before != after, "before": before, "after": after, "dataref_used": used, "command_used": []}
+
+
+def _noop_success(before: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "success": True,
+        "noop": True,
+        "before": before,
+        "after": before,
+        "dataref_used": [],
+        "command_used": [],
+    }
 
 
 def _write_result_with_commands(
@@ -655,6 +685,14 @@ def _catalog_command(*names: str) -> str | None:
     for name in names:
         meta = CATALOG.get(name)
         if meta and meta.get("kind") == "command":
+            return name
+    return None
+
+
+def _catalog_dataref(*names: str) -> str | None:
+    for name in names:
+        meta = CATALOG.get(name)
+        if meta and meta.get("kind") == "dataref":
             return name
     return None
 
@@ -800,7 +838,7 @@ def read_pedestal() -> dict[str, Any]:
         "flap_handle": flap_handle,
         "flap_actual": flap_actual,
         "slat_actual": slat_actual,
-        "speedbrake": {"handle": d["speedbrake_handle"], "armed": None},
+        "speedbrake": {"handle": d["speedbrake_handle"], "armed": _read_speedbrake_armed()},
         "parking_brake": d["parking_brake"],
         "autobrake": autobrake,
         "trim": {"stab": d["trim_stab"], "rudder": d["trim_rudder"]},
@@ -1091,6 +1129,18 @@ def read_weather_radar() -> dict[str, Any]:
 
 
 @mcp.tool
+def debug_search_xplane_names(term: str) -> dict[str, Any]:
+    """Search loaded X-Plane Web API dataref and command names by substring. Units: raw names only. Returns matching datarefs and commands. Example: debug_search_xplane_names('speedbrake')."""
+    if not term:
+        raise ValueError("term is required")
+    XP.ensure_cache()
+    needle = term.lower()
+    datarefs = sorted(name for name in XP.datarefs if needle in name.lower())
+    commands = sorted(name for name in XP.commands if needle in name.lower())
+    return {"term": term, "datarefs": datarefs, "commands": commands}
+
+
+@mcp.tool
 def set_fcu(channel: Literal["spd", "hdg", "alt", "vs"], value: float, managed: bool) -> dict[str, Any]:
     """Set FCU channel. Units: spd kt/Mach raw, hdg deg, alt ft, vs fpm. managed=True pushes, False pulls, then writes value. Returns success,before,after,dataref_used. Example: set_fcu('spd', 250, False)."""
     value_dref = {"spd": "fcu_spd", "hdg": "fcu_hdg", "alt": "fcu_alt", "vs": "fcu_vs"}[channel]
@@ -1306,16 +1356,20 @@ def set_pedestal(name: str, value: Any) -> dict[str, Any]:
         cmd = _known("toliss_airbus/gear/brake_fan")
         return _write_result_with_commands(read_pedestal, lambda: XP.command(cmd), commands=[cmd])
     if name == "autobrake":
+        target = str(value).lower()
+        before = read_pedestal()
+        if before.get("autobrake") == target:
+            return _noop_success(before)
         command_map = {
             "off": _catalog_command("toliss_airbus/abrk/pos_disarm"),
-            "lo": _catalog_command("AirbusFBW/AbrkLo", "toliss_airbus/abrk/pos_lo"),
-            "med": _catalog_command("AirbusFBW/AbrkMed", "toliss_airbus/abrk/pos_2"),
-            "max": _catalog_command("AirbusFBW/AbrkMax", "toliss_airbus/abrk/pos_hi"),
+            "lo": _catalog_command("toliss_airbus/abrk/pos_lo", "AirbusFBW/AbrkLo"),
+            "med": _catalog_command("toliss_airbus/abrk/pos_2", "AirbusFBW/AbrkMed"),
+            "max": _catalog_command("toliss_airbus/abrk/pos_hi", "AirbusFBW/AbrkMax"),
         }
-        cmd = command_map.get(str(value))
+        cmd = command_map.get(target)
         if not cmd:
             _not_impl("set_pedestal", [f"autobrake.{value} command"])
-        return _pedestal_target_result(lambda: XP.command(cmd), lambda after: after["autobrake"] == str(value), commands=[cmd])
+        return _pedestal_target_result(lambda: XP.command(cmd), lambda after: after["autobrake"] == target, commands=[cmd])
     if name == "flap":
         target = int(value)
         if target < 0 or target > 4:
@@ -1339,9 +1393,26 @@ def set_pedestal(name: str, value: Any) -> dict[str, Any]:
         cmd = cmd or (STANDARD_COMMANDS["gear_down"] if value == "down" else STANDARD_COMMANDS["gear_up"])
         return _pedestal_target_result(lambda: XP.command(cmd), lambda after: after["gear"]["lever"] == value, commands=[cmd])
     if name == "speedbrake":
-        if value == "armed":
+        if isinstance(value, str):
+            target = value.lower()
+            if target not in {"armed", "disarmed"}:
+                raise ValueError("speedbrake string value must be 'armed' or 'disarmed'")
+            before = read_pedestal()
+            current = before["speedbrake"].get("armed")
+            if current is None:
+                raise MappingError(
+                    "Cannot set speedbrake armed state idempotently: no speedbrake armed readback dataref is mapped. "
+                    "Use debug_search_xplane_names('speedbrake') or debug_search_xplane_names('spoiler') to discover one."
+                )
+            desired = target == "armed"
+            if current == desired:
+                return _noop_success(before)
+            if target == "disarmed":
+                raise MappingError(
+                    "Cannot disarm speedbrake idempotently: no verified disarm command mapping exists with armed-state readback."
+                )
             cmd = _known("toliss_airbus/speedbrake/hold_armed")
-            return _write_result_with_commands(read_pedestal, lambda: XP.command(cmd), commands=[cmd])
+            return _pedestal_target_result(lambda: XP.command(cmd), lambda after: after["speedbrake"].get("armed") is desired, commands=[cmd])
         target = max(0.0, min(1.0, float(value)))
         up_cmd = STANDARD_COMMANDS["speedbrake_up_one"]
         down_cmd = STANDARD_COMMANDS["speedbrake_down_one"]
