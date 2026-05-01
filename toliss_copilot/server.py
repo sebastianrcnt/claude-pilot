@@ -13,6 +13,7 @@ import argparse
 import asyncio
 import json
 import math
+import threading
 import time
 from pathlib import Path
 from typing import Any, Callable, Literal, Sequence
@@ -63,6 +64,9 @@ CATALOG = _load_catalog()
 DATAREF_CACHE_TTL_SECONDS = 1.0
 DATAREF_VALUE_CACHE: dict[str, tuple[float, Any]] = {}
 DATAREF_CACHE_STATS = {"hits": 0, "misses": 0}
+SIDESTICK_INACTIVITY_TIMEOUT_SECONDS = 10.0
+SIDESTICK_LOCK = threading.RLock()
+SIDESTICK_STATE: dict[str, Any] = {"grabbed": False, "inactivity_timer": None, "duration_timer": None}
 
 
 STANDARD_DREFS: dict[str, str] = {
@@ -87,6 +91,11 @@ STANDARD_DREFS: dict[str, str] = {
     "tcas_filter": "sim/cockpit2/radios/actuators/tcas_filter",
     "instrument_brightness": "sim/cockpit2/electrical/instrument_brightness_ratio",
     "speedbrake_ratio": "sim/cockpit2/controls/speedbrake_ratio",
+    "override_joystick": "sim/operation/override/override_joystick",
+    "yoke_pitch_ratio": "sim/joystick/yoke_pitch_ratio",
+    "yoke_roll_ratio": "sim/joystick/yoke_roll_ratio",
+    "elevator_trim": "sim/cockpit2/controls/elevator_trim",
+    "override_pitch_trim": "sim/operation/override/override_pitch_trim",
     "fcu_airspeed_dial": "sim/cockpit2/autopilot/airspeed_dial_kts_mach",
     "fcu_heading_dial": "sim/cockpit2/autopilot/heading_dial_deg_mag_pilot",
     "fcu_altitude_dial": "sim/cockpit2/autopilot/altitude_dial_ft",
@@ -588,6 +597,10 @@ def _write_std(key: str, value: Any) -> None:
     XP.write(STANDARD_DREFS[key], value)
 
 
+def _clamp(value: float, minimum: float, maximum: float) -> float:
+    return max(minimum, min(maximum, float(value)))
+
+
 def _mhz_from_com_raw(value: Any) -> float | None:
     n = _num(value)
     return None if n is None else n / 1000.0
@@ -663,6 +676,65 @@ def _read_speedbrake_armed() -> bool | None:
 def _read_speedbrake_raw_ratio() -> float | None:
     value = _num(_read_std("speedbrake_ratio"))
     return None if value is None else float(value)
+
+
+def _read_sidestick() -> dict[str, Any]:
+    return {
+        "override": _bool(XP.read(STANDARD_DREFS["override_joystick"])),
+        "pitch": XP.read(STANDARD_DREFS["yoke_pitch_ratio"]),
+        "roll": XP.read(STANDARD_DREFS["yoke_roll_ratio"]),
+    }
+
+
+def _sidestick_cancel_timer(key: str) -> None:
+    timer = SIDESTICK_STATE.get(key)
+    if timer is not None:
+        timer.cancel()
+        SIDESTICK_STATE[key] = None
+
+
+def _sidestick_cleanup() -> None:
+    with SIDESTICK_LOCK:
+        _sidestick_cancel_timer("inactivity_timer")
+        _sidestick_cancel_timer("duration_timer")
+        try:
+            XP.write(STANDARD_DREFS["yoke_pitch_ratio"], 0.0)
+            XP.write(STANDARD_DREFS["yoke_roll_ratio"], 0.0)
+        finally:
+            XP.write(STANDARD_DREFS["override_joystick"], 0)
+            DATAREF_VALUE_CACHE.clear()
+            SIDESTICK_STATE["grabbed"] = False
+
+
+def _sidestick_inactivity_expired() -> None:
+    _sidestick_cleanup()
+
+
+def _sidestick_schedule_inactivity() -> None:
+    _sidestick_cancel_timer("inactivity_timer")
+    timer = threading.Timer(SIDESTICK_INACTIVITY_TIMEOUT_SECONDS, _sidestick_inactivity_expired)
+    timer.daemon = True
+    SIDESTICK_STATE["inactivity_timer"] = timer
+    timer.start()
+
+
+def _sidestick_schedule_duration(duration_s: float, auto_release: bool) -> None:
+    _sidestick_cancel_timer("duration_timer")
+
+    def finish() -> None:
+        with SIDESTICK_LOCK:
+            XP.write(STANDARD_DREFS["yoke_pitch_ratio"], 0.0)
+            XP.write(STANDARD_DREFS["yoke_roll_ratio"], 0.0)
+            DATAREF_VALUE_CACHE.clear()
+            if auto_release:
+                _sidestick_cleanup()
+            elif SIDESTICK_STATE["grabbed"]:
+                _sidestick_schedule_inactivity()
+
+    timer = threading.Timer(max(0.0, duration_s), finish)
+    timer.daemon = True
+    SIDESTICK_STATE["duration_timer"] = timer
+    timer.start()
 
 
 def _normalize_heading(value: float) -> float:
@@ -1086,6 +1158,34 @@ def _write_array_index(dref: str, index: int, value: float) -> None:
     updated = list(current)
     updated[index] = value
     XP.write(dref, updated)
+
+
+FLIGHT_COMPUTER_INDEX = {
+    # ToLiss exposes a writable aggregate switch array, not documented
+    # individual ELAC/SEC/FAC datarefs in the tested A321 runtime. Validate
+    # these indices in-sim with DataRefTool before operational use:
+    # 1) watch AirbusFBW/FCCSwitchArray and AirbusFBW/FCCSwitchAnims;
+    # 2) toggle each overhead ELAC/SEC/FAC pushbutton by hand;
+    # 3) confirm which index changes for elac1/elac2/sec1/sec2/sec3/fac1/fac2;
+    # 4) update this map if the observed index order differs.
+    "elac1": 0,
+    "elac2": 1,
+    "sec1": 2,
+    "sec2": 3,
+    "sec3": 4,
+    "fac1": 5,
+    "fac2": 6,
+}
+
+
+def _read_flight_computer_switches() -> dict[str, Any]:
+    dref = _known("AirbusFBW/FCCSwitchArray")
+    raw = XP.read(dref)
+    states = {
+        name: (None if not isinstance(raw, list) or len(raw) <= index else _bool(raw[index]))
+        for name, index in FLIGHT_COMPUTER_INDEX.items()
+    }
+    return {"switches": states, "raw": raw, "mapping_note": "FCCSwitchArray index mapping is inferred; validate with DataRefTool in-sim."}
 
 
 def _catalog_command(*names: str) -> str | None:
@@ -1638,6 +1738,145 @@ def set_atc(name: Literal["code", "mode", "ident", "tcas_mode", "tcas_range", "t
         dref = WRITE_DREFS["xpdr_alt"]
         return _write_result(read_atc, lambda: XP.write(dref, 1 if str(value) == "on" else 0), [dref])
     _not_impl("set_atc", [name])
+
+
+@mcp.tool
+def grab_sidestick() -> dict[str, Any]:
+    """Grab sidestick control by enabling sim/operation/override/override_joystick for MCP control. 이 도구가 작동 중일 때는 사용자 물리 사이드스틱 입력이 무시됨. Starts a 10 second inactivity timeout; if set_sidestick is not called again before it expires, release_sidestick cleanup restores physical sidestick input. Returns success,before,after,dataref_used,command_used."""
+    with SIDESTICK_LOCK:
+        before = _read_sidestick()
+        XP.write(STANDARD_DREFS["override_joystick"], 1)
+        XP.write(STANDARD_DREFS["yoke_pitch_ratio"], 0.0)
+        XP.write(STANDARD_DREFS["yoke_roll_ratio"], 0.0)
+        DATAREF_VALUE_CACHE.clear()
+        SIDESTICK_STATE["grabbed"] = True
+        _sidestick_schedule_inactivity()
+        after = _read_sidestick()
+    return {
+        "success": after["override"] is True,
+        "before": before,
+        "after": after,
+        "dataref_used": [STANDARD_DREFS["override_joystick"], STANDARD_DREFS["yoke_pitch_ratio"], STANDARD_DREFS["yoke_roll_ratio"]],
+        "command_used": [],
+        "warning": "사용자 물리 사이드스틱 입력은 release_sidestick 또는 10초 inactivity timeout까지 무시됩니다.",
+    }
+
+
+@mcp.tool
+def release_sidestick() -> dict[str, Any]:
+    """Release MCP sidestick control and restore physical sidestick input. 이 도구가 작동 중일 때는 사용자 물리 사이드스틱 입력이 무시됨; this cleanup writes pitch=0, roll=0, then override_joystick=0. Returns success,before,after,dataref_used,command_used."""
+    before = _read_sidestick()
+    _sidestick_cleanup()
+    after = _read_sidestick()
+    return {
+        "success": after["override"] is False and abs(float(_num(after["pitch"]) or 0.0)) <= 0.001 and abs(float(_num(after["roll"]) or 0.0)) <= 0.001,
+        "before": before,
+        "after": after,
+        "dataref_used": [STANDARD_DREFS["yoke_pitch_ratio"], STANDARD_DREFS["yoke_roll_ratio"], STANDARD_DREFS["override_joystick"]],
+        "command_used": [],
+    }
+
+
+@mcp.tool
+def set_sidestick(pitch: float, roll: float, duration_s: float | None = None) -> dict[str, Any]:
+    """Set MCP sidestick pitch/roll in -1..+1. 이 도구가 작동 중일 때는 사용자 물리 사이드스틱 입력이 무시됨. If not already grabbed, this automatically calls the same grab path, writes input, and releases after duration_s when provided; otherwise inactivity cleanup releases after 10 seconds without further set_sidestick calls. duration_s returns pitch/roll to 0 after the duration. Returns success,before,after,dataref_used,command_used."""
+    pitch_value = _clamp(float(pitch), -1.0, 1.0)
+    roll_value = _clamp(float(roll), -1.0, 1.0)
+    if duration_s is not None and float(duration_s) < 0:
+        raise ValueError("duration_s must be >= 0")
+    with SIDESTICK_LOCK:
+        before = _read_sidestick()
+        auto_grabbed = not SIDESTICK_STATE["grabbed"]
+        if auto_grabbed:
+            XP.write(STANDARD_DREFS["override_joystick"], 1)
+            SIDESTICK_STATE["grabbed"] = True
+        XP.write(STANDARD_DREFS["yoke_pitch_ratio"], pitch_value)
+        XP.write(STANDARD_DREFS["yoke_roll_ratio"], roll_value)
+        DATAREF_VALUE_CACHE.clear()
+        _sidestick_schedule_inactivity()
+        if duration_s is not None:
+            _sidestick_schedule_duration(float(duration_s), auto_grabbed)
+        after = _read_sidestick()
+    return {
+        "success": after["override"] is True
+        and abs(float(_num(after["pitch"]) or 0.0) - pitch_value) <= 0.01
+        and abs(float(_num(after["roll"]) or 0.0) - roll_value) <= 0.01,
+        "before": before,
+        "after": after,
+        "dataref_used": [STANDARD_DREFS["override_joystick"], STANDARD_DREFS["yoke_pitch_ratio"], STANDARD_DREFS["yoke_roll_ratio"]],
+        "command_used": [],
+        "auto_grabbed": auto_grabbed,
+        "duration_s": duration_s,
+        "warning": "사용자 물리 사이드스틱 입력은 release_sidestick 또는 inactivity/duration cleanup까지 무시됩니다.",
+    }
+
+
+@mcp.tool
+def set_flight_computer(name: Literal["elac1", "elac2", "sec1", "sec2", "sec3", "fac1", "fac2"], state: Literal["on", "off"]) -> dict[str, Any]:
+    """Set flight-computer OFF pushbutton state using AirbusFBW/FCCSwitchArray. name elac1/elac2/sec1/sec2/sec3/fac1/fac2; state on/off. ToLiss does not document individual ELAC/SEC/FAC write datarefs; this inferred FCCSwitchArray index map must be verified in-game with DataRefTool by toggling each overhead pushbutton and confirming the matching array index before operational use. Returns success,before,after,dataref_used,command_used."""
+    dref = _known("AirbusFBW/FCCSwitchArray")
+    index = FLIGHT_COMPUTER_INDEX[name]
+    target = 1 if state == "on" else 0
+    before = _read_flight_computer_switches()
+    _write_array_index(dref, index, target)
+    DATAREF_VALUE_CACHE.clear()
+    time.sleep(0.15)
+    after = _read_flight_computer_switches()
+    return {
+        "success": after["switches"].get(name) == (state == "on"),
+        "before": before,
+        "after": after,
+        "dataref_used": [dref],
+        "command_used": [],
+        "warning": "FCCSwitchArray index mapping is inferred; validate with DataRefTool in-sim. If success is false or the cockpit switch does not move, suspect incorrect ToLiss index mapping or missing override behavior.",
+    }
+
+
+@mcp.tool
+def set_trim_stab(value: float) -> dict[str, Any]:
+    """Set manual stabilizer/elevator trim command value in -1..+1. Uses writable X-Plane trim datarefs because ToLiss AirbusFBW/PitchTrimPosition is read-only in the tested runtime. AP may overwrite trim every frame; disconnect AP first or expect readback to revert. Returns success,before,after,dataref_used,command_used."""
+    target = _clamp(float(value), -1.0, 1.0)
+    before = read_pedestal()
+    trim_dref = STANDARD_DREFS["elevator_trim"]
+    override_dref = STANDARD_DREFS["override_pitch_trim"]
+    previous_override = XP.read(override_dref)
+    try:
+        XP.write(override_dref, 1)
+        XP.write(trim_dref, target)
+    finally:
+        XP.write(override_dref, previous_override)
+    DATAREF_VALUE_CACHE.clear()
+    time.sleep(0.15)
+    after = read_pedestal()
+    trim_readback = _num(XP.read(trim_dref))
+    success = trim_readback is not None and abs(float(trim_readback) - target) <= 0.02
+    warning = None
+    if _num(after["trim"]["stab"]) == _num(before["trim"]["stab"]):
+        warning = "Writable X-Plane trim accepted the value, but ToLiss PitchTrimPosition did not change. AP/FBW may be overwriting trim or a ToLiss-specific override/write path may be required."
+    return {
+        "success": success,
+        "before": before,
+        "after": after,
+        "dataref_used": [override_dref, trim_dref],
+        "command_used": [],
+        "warning": warning,
+    }
+
+
+@mcp.tool
+def set_speedbrake_inflight(ratio: float) -> dict[str, Any]:
+    """Set in-flight speedbrake handle ratio 0..1 using sim/cockpit2/controls/speedbrake_ratio. This is separate from set_pedestal('speedbrake','armed'|'disarmed'). If success is false or readback does not move, suspect ToLiss custom override/gating or flight-condition logic. Returns success,before,after,dataref_used,command_used."""
+    target = _clamp(float(ratio), 0.0, 1.0)
+    before = read_pedestal()
+    dref = STANDARD_DREFS["speedbrake_ratio"]
+    XP.write(dref, target)
+    DATAREF_VALUE_CACHE.clear()
+    time.sleep(0.15)
+    after = read_pedestal()
+    actual = _num(after["speedbrake"]["handle"])
+    success = actual is not None and abs(float(actual) - target) <= 0.05
+    warning = None if success else "Speedbrake write did not verify through read_pedestal; ToLiss may require a custom override/dataref or may be gating handle movement in the current flight state."
+    return {"success": success, "before": before, "after": after, "dataref_used": [dref], "command_used": [], "warning": warning}
 
 
 @mcp.tool

@@ -88,6 +88,6 @@ Add to `claude_desktop_config.json`:
 
 Read tools: `read_flight_state`, `read_fcu`, `read_fma`, `read_autoflight`, `read_engines`, `read_overhead_full`, `read_pedestal`, `read_radios`, `read_atc`, `read_ecam`, `read_efis`, `read_weather_radar`.
 
-Write tools: `fcu_dial_turn`, `fcu_dial_pull`, `fcu_dial_push`, `set_fcu` (deprecated compatibility wrapper), `set_autoflight`, `set_lights`, `set_brightness`, `set_antiice`, `set_pneumatic`, `set_apu`, `set_electrical`, `set_fuel`, `set_hydraulic`, `set_radio`, `set_acp`, `set_atc`, `set_pedestal`, `set_efis`, `set_ecam`, `set_weather_radar`.
+Write tools: `grab_sidestick`, `release_sidestick`, `set_sidestick`, `fcu_dial_turn`, `fcu_dial_pull`, `fcu_dial_push`, `set_fcu` (deprecated compatibility wrapper), `set_autoflight`, `set_lights`, `set_brightness`, `set_antiice`, `set_pneumatic`, `set_apu`, `set_electrical`, `set_fuel`, `set_hydraulic`, `set_flight_computer`, `set_trim_stab`, `set_speedbrake_inflight`, `set_radio`, `set_acp`, `set_atc`, `set_pedestal`, `set_efis`, `set_ecam`, `set_weather_radar`.
 
 The implementation also exposes dedicated ECAM SD page read tools such as `read_sd_apu`, `read_sd_bleed`, and related system pages.
