@@ -184,6 +184,7 @@ READ_DREFS: dict[str, dict[str, str]] = {
             "fd2": "AirbusFBW/FD2Engage",
             "loc_armed": "AirbusFBW/LOCilluminated",
             "appr_armed": "AirbusFBW/APPRilluminated",
+            "vertical_mode": "AirbusFBW/APVerticalMode",
             "trk_fpa_mode": "AirbusFBW/HDGTRKmode",
         }
     ),
@@ -958,8 +959,9 @@ def read_fma() -> dict[str, Any]:
 def read_autoflight() -> dict[str, Any]:
     """Read autoflight states. Units: booleans/mode integers. Returns ap1, ap2, athr, fd1, fd2, loc_armed, appr_armed, exped, trk_fpa_mode. Example: {'ap1': True, 'athr': True}."""
     d = _read_map(READ_DREFS["autoflight"])
-    result = {k: (_bool(v) if k != "trk_fpa_mode" else v) for k, v in d.items()}
-    result["exped"] = None
+    result = {k: (_bool(v) if k not in {"trk_fpa_mode", "vertical_mode"} else v) for k, v in d.items() if k != "vertical_mode"}
+    vertical_mode = _num(d["vertical_mode"])
+    result["exped"] = bool(vertical_mode is not None and vertical_mode > 110)
     return result
 
 
