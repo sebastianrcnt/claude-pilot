@@ -716,25 +716,38 @@ def _set_fcu_direct(
     *,
     normalize: Callable[[float], float] | None = None,
 ) -> dict[str, Any]:
-    before = read_fcu()
+    original_before = read_fcu()
+    before = original_before
     command_used: list[str] = []
     target = normalize(target) if normalize else float(target)
     current = _num(before[channel]["value"])
     if current is None:
         raise MappingError(f"set_fcu('{channel}') requires a working FCU readback before direct control can be used.")
     current = normalize(float(current)) if normalize else float(current)
-    if _bool(before[channel]["managed"]) != desired_managed:
-        cmd = COMMANDS[f"{channel}_{'push' if desired_managed else 'pull'}"]
-        XP.command(cmd)
-        command_used.append(cmd)
-        time.sleep(0.15)
-        before = read_fcu()
-        current = _num(before[channel]["value"])
-        if current is None:
-            raise MappingError(f"set_fcu('{channel}') requires a working FCU readback before direct control can be used.")
-        current = normalize(float(current)) if normalize else float(current)
-    if _bool(before[channel]["managed"]) == desired_managed and _fcu_value_close(channel, current, target):
-        return _noop_success(before)
+
+    # FCU push/pull is a physical action, not just a request for the managed flag
+    # to equal a target state. For example, pulling ALT while already selected
+    # and holding ALT can trigger OP CLB/OP DES, so never skip this command based
+    # only on the current managed readback.
+    cmd = COMMANDS[f"{channel}_{'push' if desired_managed else 'pull'}"]
+    XP.command(cmd)
+    command_used.append(cmd)
+    DATAREF_VALUE_CACHE.clear()
+    time.sleep(0.15)
+    before = read_fcu()
+    current = _num(before[channel]["value"])
+    if current is None:
+        raise MappingError(f"set_fcu('{channel}') requires a working FCU readback before direct control can be used.")
+    current = normalize(float(current)) if normalize else float(current)
+
+    if _fcu_value_close(channel, current, target):
+        return {
+            "success": True,
+            "before": original_before,
+            "after": before,
+            "dataref_used": [],
+            "command_used": command_used,
+        }
 
     dial_raw = _num(XP.read(dial_dref))
     if dial_raw is None:
@@ -750,7 +763,7 @@ def _set_fcu_direct(
     if _fcu_value_close(channel, actual, target):
         result = {
             "success": True,
-            "before": before,
+            "before": original_before,
             "after": after,
             "dataref_used": [dial_dref],
             "command_used": command_used,
@@ -1202,7 +1215,7 @@ def debug_search_xplane_names(term: str) -> dict[str, Any]:
 
 @mcp.tool
 def set_fcu(channel: Literal["spd", "hdg", "alt", "vs"], value: float, managed: bool) -> dict[str, Any]:
-    """Set FCU selected target. Units: spd kt/Mach raw, hdg deg, alt ft, vs fpm. managed=True pushes, False pulls, then writes the FCU dial value. Changing an FCU dial does not guarantee aircraft response; AP engagement, side-stick input, current modes, and other external conditions can prevent or alter the actual flight-path response. After calling set_fcu, verify real aircraft motion with read_flight_state, especially hdg, vs, and baro_alt trending toward the target. read_fma mode confirmation is currently not reliable due to known dataref mapping issues, so use read_flight_state as the primary verification method until FMA mapping is fixed. Returns success,before,after,dataref_used. Example: set_fcu('spd', 250, False)."""
+    """Set FCU selected target. Units: spd kt/Mach raw, hdg deg, alt ft, vs fpm. managed=True always sends the FCU push command, False always sends the pull command, then writes the FCU dial value. Changing an FCU dial does not guarantee aircraft response; AP engagement, side-stick input, current modes, and other external conditions can prevent or alter the actual flight-path response. After calling set_fcu, verify real aircraft motion with read_flight_state, especially hdg, vs, and baro_alt trending toward the target. read_fma mode confirmation is currently not reliable due to known dataref mapping issues, so use read_flight_state as the primary verification method until FMA mapping is fixed. Returns success,before,after,dataref_used,command_used. Example: set_fcu('spd', 250, False)."""
     if channel == "hdg":
         return _set_fcu_hdg(float(value), managed)
     if channel == "spd":
