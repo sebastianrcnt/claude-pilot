@@ -344,6 +344,7 @@ COMMANDS = _m(
         "exped": "AirbusFBW/EXPEDbutton",
         "trk_fpa": "toliss_airbus/hdgtrk_button_push",
         "metric_alt": "toliss_airbus/metric_alt_button_push",
+        "ias_mach": "toliss_airbus/ias_mach_button_push",
         "athr_disconnect": "AirbusFBW/ATHRbutton",
         "iscs_open": "toliss_airbus/iscs_open",
     }
@@ -1193,6 +1194,18 @@ def _write_array_index(dref: str, index: int, value: float) -> None:
     XP.write(dref, updated)
 
 
+def _wait_for_condition(read_fn: Callable[[], Any], condition: Callable[[Any], bool], timeout_s: float = 1.5, interval_s: float = 0.1) -> Any:
+    deadline = time.monotonic() + timeout_s
+    last = read_fn()
+    while time.monotonic() < deadline:
+        if condition(last):
+            return last
+        time.sleep(interval_s)
+        DATAREF_VALUE_CACHE.clear()
+        last = read_fn()
+    return last
+
+
 FLIGHT_COMPUTER_INDEX = {
     # ToLiss exposes a writable aggregate switch array, not documented
     # individual ELAC/SEC/FAC datarefs in the tested A321 runtime. Validate
@@ -1296,8 +1309,24 @@ def read_fcu() -> dict[str, Any]:
     alt_value = _read_fcu_direct_value("fcu_altitude_dial", d["alt_value"])
     vs_value = _read_fcu_direct_value("fcu_vs_dial", d["vs_value"])
     trk_fpa = _bool(d["hdg_mode"])
+    try:
+        show_mach = _bool(XP.read(_known("AirbusFBW/ShowMachCapt")))
+    except Exception:
+        show_mach = None
+    spd_numeric = _num(spd_value)
+    # The ToLiss ShowMach dataref can lag or remain stale after the button
+    # command. The dial value itself is unambiguous: Mach is stored below 2,
+    # IAS is stored as knots.
+    value_mach_mode = None if spd_numeric is None else float(spd_numeric) < 2.0
+    mach_mode = value_mach_mode if value_mach_mode is not None else show_mach
     return {
-        "spd": {"value": spd_value, "managed": _bool(d["spd_managed"])},
+        "spd": {
+            "value": spd_value,
+            "managed": _bool(d["spd_managed"]),
+            "unit": "mach" if mach_mode else "kt" if mach_mode is False else None,
+            "mach_mode": mach_mode,
+            "show_mach_indicator": show_mach,
+        },
         "hdg": {"value": hdg_value, "managed": _bool(d["hdg_managed"]), "mode": "trk" if trk_fpa else "hdg"},
         "alt": {"value": alt_value, "managed": _bool(d["alt_managed"]), "step": 1000 if _bool(d["alt_step"]) else 100},
         "vs": {"value": vs_value, "managed": _bool(d["vs_managed"]), "mode": "fpa" if trk_fpa else "vs"},
@@ -1551,6 +1580,26 @@ def fcu_dial_pull(channel: Literal["spd", "hdg", "alt", "vs"], value: float | No
 def fcu_dial_push(channel: Literal["spd", "hdg", "alt", "vs"]) -> dict[str, Any]:
     """Push an FCU dial without writing a target value. Sends the FCU push command only and leaves the dial value unchanged. Returns success,before,after,dataref_used,command_used. Example: fcu_dial_push('hdg')."""
     return _fcu_command_only(channel, "push")
+
+
+@mcp.tool
+def set_fcu_mode(name: Literal["ias_mach"], state: Literal["toggle", "ias", "mach"] = "toggle") -> dict[str, Any]:
+    """Set FCU display mode. name ias_mach toggles or targets the FCU speed window between kt/IAS and Mach using toliss_airbus/ias_mach_button_push. Returns success,before,after,dataref_used,command_used. Example: set_fcu_mode('ias_mach','mach')."""
+    if name != "ias_mach":
+        raise ValueError(f"Unsupported FCU mode: {name}")
+    cmd = COMMANDS["ias_mach"]
+    before = read_fcu()
+    target_mach = {"mach": True, "ias": False}.get(state)
+    if target_mach is not None and before["spd"].get("mach_mode") is target_mach:
+        return _noop_success(before)
+    XP.command(cmd)
+    DATAREF_VALUE_CACHE.clear()
+    after = _wait_for_condition(
+        read_fcu,
+        lambda current: current["spd"].get("mach_mode") != before["spd"].get("mach_mode") if state == "toggle" else current["spd"].get("mach_mode") is target_mach,
+    )
+    success = before["spd"].get("mach_mode") != after["spd"].get("mach_mode") if state == "toggle" else after["spd"].get("mach_mode") is target_mach
+    return {"success": success, "before": before, "after": after, "dataref_used": [], "command_used": [cmd]}
 
 
 @mcp.tool
@@ -2073,7 +2122,7 @@ def set_pedestal(name: str, value: Any) -> dict[str, Any]:
 
 @mcp.tool
 def set_efis(side: Literal["capt", "fo"], name: str, value: Any) -> dict[str, Any]:
-    """Set EFIS. side capt/fo; name nd_mode, nd_range, option_cstr/wpt/vord/ndb/arpt, baro_value, baro_std, baro_unit, ls. Returns success,before,after,dataref_used. Example: set_efis('capt','option_wpt','toggle')."""
+    """Set EFIS. side capt/fo; name nd_mode, nd_range, option_cstr/wpt/vord/ndb/arpt, baro_value, baro_std, baro_unit, ls. baro_std accepts on/off/toggle and uses the ToLiss baro push command. Returns success,before,after,dataref_used. Example: set_efis('capt','baro_std','on')."""
     p = "capt" if side == "capt" else "fo"
     if name.startswith("option_"):
         opt = name.removeprefix("option_")
@@ -2085,7 +2134,32 @@ def set_efis(side: Literal["capt", "fo"], name: str, value: Any) -> dict[str, An
         return _write_result(lambda: read_efis(side), lambda: XP.command(cmd), [cmd])
     if name == "baro_std":
         cmd = _known("toliss_airbus/capt_baro_push" if p == "capt" else "toliss_airbus/copilot_baro_push")
-        return _write_result(lambda: read_efis(side), lambda: XP.command(cmd), [cmd])
+        before = read_efis(side)
+        state = str(value).strip().lower()
+        if state in {"on", "std", "true", "1"}:
+            target = True
+        elif state in {"off", "qnh", "false", "0"}:
+            target = False
+        elif state == "toggle":
+            target = None
+        else:
+            raise ValueError("baro_std value must be on/off/toggle")
+        if target is not None and before["baro"]["std"] is target:
+            return _noop_success(before)
+        XP.command(cmd)
+        DATAREF_VALUE_CACHE.clear()
+        after = _wait_for_condition(lambda: read_efis(side), lambda state: state["baro"]["std"] != before["baro"]["std"])
+        datarefs: list[str] = []
+        warning = None
+        if target is not None and after["baro"]["std"] is not target:
+            dref = READ_DREFS["efis"][f"{p}_baro_std"]
+            XP.write(dref, 1 if target else 0)
+            DATAREF_VALUE_CACHE.clear()
+            datarefs.append(dref)
+            after = _wait_for_condition(lambda: read_efis(side), lambda state: state["baro"]["std"] is target, timeout_s=0.5)
+            warning = f"{cmd} did not change baro STD readback in time; wrote {dref} directly as fallback."
+        success = before["baro"]["std"] != after["baro"]["std"] if target is None else after["baro"]["std"] is target
+        return {"success": success, "before": before, "after": after, "dataref_used": datarefs, "command_used": [cmd], "warning": warning}
     if name == "baro_value":
         dref = WRITE_DREFS["baro_capt" if p == "capt" else "baro_fo"]
         return _write_result(lambda: read_efis(side), lambda: XP.write(dref, value), [dref])
