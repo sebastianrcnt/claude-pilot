@@ -1183,7 +1183,7 @@ def read_autoflight() -> dict[str, Any]:
 
 @mcp.tool
 def read_engines() -> dict[str, Any]:
-    """Read engine 1/2 indications. Units: percent, deg C, kg/h or ToLiss units, psi. Returns eng list with n1, n2, egt, ff, oil_temp, oil_press, master_switch, mode_selector. Example: {'eng': [{'n1': 22.1}]}."""
+    """Read engine 1/2 indications. Units: percent, deg C, kg/s (X-Plane native dataref; x3600 = kg/h), psi. Returns eng list with n1, n2, egt, ff, oil_temp, oil_press, master_switch, mode_selector. Example: {'eng': [{'n1': 22.1}]}."""
     d = _read_map(READ_DREFS["engines"])
     n2 = _read_std("engine_n2")
     oil_temp = _read_std("engine_oil_temp")
