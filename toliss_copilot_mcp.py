@@ -872,13 +872,29 @@ def _decode_toliss_text(value: Any) -> str:
     return str(value).rstrip("\x00").rstrip()
 
 
-def _colored_lines(prefix: str, max_lines: int) -> list[dict[str, Any]]:
-    colors = {"w": "white", "g": "green", "b": "blue", "a": "amber", "r": "red"}
+ECAM_COLORS = {"w": "white", "g": "green", "b": "blue", "a": "amber", "r": "red"}
+
+
+def _ecam_text_name(display: Literal["ewd", "sd"], line: int, suffix: str) -> str | None:
+    if display == "ewd":
+        name = f"AirbusFBW/EWD{line}{suffix}Text"
+        return name if name in CATALOG else None
+    candidates = (
+        f"AirbusFBW/SDline{line}{suffix}",
+        f"AirbusFBW/SDLine{line}{suffix}",
+        f"AirbusFBW/SDtext{line}{suffix}",
+        f"AirbusFBW/SDText{line}{suffix}",
+        f"AirbusFBW/SD{line}{suffix}Text",
+    )
+    return next((name for name in candidates if name in CATALOG), None)
+
+
+def _colored_lines(display: Literal["ewd", "sd"], max_lines: int) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for i in range(1, max_lines + 1):
-        for suffix, color in colors.items():
-            name = f"AirbusFBW/{prefix}line{i}{suffix}" if prefix == "SD" else f"AirbusFBW/{prefix}{i}{suffix}Text"
-            if name not in CATALOG:
+        for suffix, color in ECAM_COLORS.items():
+            name = _ecam_text_name(display, i, suffix)
+            if not name:
                 continue
             try:
                 text = _decode_toliss_text(XP.read(name))
@@ -994,9 +1010,9 @@ def _mcdu_command(side: Literal["capt", "fo"], key: str) -> str:
 def read_ecam(side: Literal["ewd", "sd"]) -> dict[str, Any]:
     """Read ECAM text. Units: decoded ASCII text and color names. side='ewd' or 'sd'. Returns lines with line,color,text and current_sd_page for sd. Example: {'lines': [{'line': 1, 'text': 'APU AVAIL', 'color': 'green'}]}."""
     if side == "ewd":
-        return {"lines": _colored_lines("EWD", 7), "current_sd_page": None}
+        return {"lines": _colored_lines("ewd", 7), "current_sd_page": None}
     page = XP.read(_known("AirbusFBW/SDPage"))
-    return {"lines": _colored_lines("SD", 18), "current_sd_page": page}
+    return {"lines": _colored_lines("sd", 18), "current_sd_page": page}
 
 
 @mcp.tool

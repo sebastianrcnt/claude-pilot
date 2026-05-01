@@ -25,7 +25,7 @@ The server uses `toliss_a321_catalog.json` for ToLiss/AirbusFBW names and direct
 - ✅ `set_pedestal.parking_brake`: command-first using ToLiss park brake commands.
 - ✅ `set_pedestal.engine_master_1/2`: command-only using ToLiss engine master commands.
 - ✅ X-Plane dataref cache stores `is_writable`; direct PATCH paths reject read-only datarefs before writing.
-- ✅ `read_ecam`: decodes ToLiss fixed-length byte-array ECAM text datarefs returned by the Web API as base64, strips null padding, omits empty color slots, and preserves multiple color segments per line.
+- ✅ `read_ecam`: decodes ToLiss fixed-length byte-array ECAM text datarefs returned by the Web API as base64, including EWD `AirbusFBW/EWD{N}{color}Text` and SD `AirbusFBW/SDline{N}{color}` patterns. It strips null padding, omits empty color slots, preserves multiple color segments per line, and keeps `current_sd_page`.
 - ✅ `read_mcdu`: MCDU1/MCDU2 display decoding from `AirbusFBW/MCDU{1|2}{title|stitle|labelN|contN|scontN|sp}{color}` datarefs, including top-level scratchpad text.
 - ✅ `mcdu_press`: MCDU1/MCDU2 key command mapping from catalog entries such as `AirbusFBW/MCDU1KeyA`, `AirbusFBW/MCDU1LSK1L`, `AirbusFBW/MCDU1DirTo`, and `AirbusFBW/MCDU1SlewRight`. Supports text decomposition, LSK follow-up, and 50 ms command spacing.
 
