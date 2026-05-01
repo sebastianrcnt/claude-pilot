@@ -14,6 +14,7 @@ import asyncio
 import json
 import math
 import os
+import sys
 import threading
 import time
 from pathlib import Path
@@ -68,12 +69,13 @@ if _XPLANE_PATH:
             f"[navdata] Loaded {len(_NAV_DB.airports)} airports, "
             f"{len(_NAV_DB.fixes)} fixes, {len(_NAV_DB.navaids)} navaids "
             f"from {_XPLANE_PATH}",
+            file=sys.stderr,
             flush=True,
         )
     except Exception as _nav_exc:
-        print(f"[navdata] WARNING: Failed to load nav data: {_nav_exc}", flush=True)
+        print(f"[navdata] WARNING: Failed to load nav data: {_nav_exc}", file=sys.stderr, flush=True)
 else:
-    print("[navdata] XPLANE_PATH not set — nav lookup tools disabled.", flush=True)
+    print("[navdata] XPLANE_PATH not set — nav lookup tools disabled.", file=sys.stderr, flush=True)
 
 
 def _load_catalog() -> dict[str, dict[str, Any]]:
@@ -2378,5 +2380,4 @@ if _NAV_DB is not None:
 
 if __name__ == "__main__":
     run_server()
-
 
