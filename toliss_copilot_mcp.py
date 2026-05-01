@@ -1633,7 +1633,7 @@ def debug_search_xplane_names(term: str) -> dict[str, Any]:
 
 @mcp.tool
 def set_fcu(channel: Literal["spd", "hdg", "alt", "vs"], value: float, managed: bool) -> dict[str, Any]:
-    """Set FCU channel. Units: spd kt/Mach raw, hdg deg, alt ft, vs fpm. managed=True pushes, False pulls, then writes value. Returns success,before,after,dataref_used. Example: set_fcu('spd', 250, False)."""
+    """Set FCU selected target. Units: spd kt/Mach raw, hdg deg, alt ft, vs fpm. managed=True pushes, False pulls, then writes the FCU dial value. Changing an FCU dial does not guarantee aircraft response; AP engagement, side-stick input, current modes, and other external conditions can prevent or alter the actual flight-path response. After calling set_fcu, verify real aircraft motion with read_flight_state, especially hdg, vs, and baro_alt trending toward the target. read_fma mode confirmation is currently not reliable due to known dataref mapping issues, so use read_flight_state as the primary verification method until FMA mapping is fixed. Returns success,before,after,dataref_used. Example: set_fcu('spd', 250, False)."""
     if channel == "hdg":
         return _set_fcu_hdg(float(value), managed)
     if channel == "spd":
