@@ -900,6 +900,39 @@ MCDU_COLORS = {
 }
 
 
+MCDU_KEY_SUFFIXES: dict[str, str] = {
+    **{chr(code): f"Key{chr(code)}" for code in range(ord("A"), ord("Z") + 1)},
+    **{str(digit): f"Key{digit}" for digit in range(10)},
+    "DOT": "KeyDecimal",
+    "SLASH": "KeySlash",
+    "SP": "KeySpace",
+    "PLUSMINUS": "KeyPM",
+    "CLR": "KeyClear",
+    "OVFY": "KeyOverfly",
+    "DIR": "DirTo",
+    "PROG": "Prog",
+    "PERF": "Perf",
+    "INIT": "Init",
+    "DATA": "Data",
+    "FPLN": "Fpln",
+    "RADNAV": "RadNav",
+    "FUELPRED": "FuelPred",
+    "SECFPL": "SecFpln",
+    "ATCCOMM": "ATC",
+    "MENU": "Menu",
+    "AIRPORT": "Airport",
+    "NEXTPAGE": "SlewRight",
+    "PREVPAGE": "SlewLeft",
+    "UP": "SlewUp",
+    "DOWN": "SlewDown",
+    "BRTUP": "KeyBright",
+    "BRTDN": "KeyDim",
+}
+for _side in ("L", "R"):
+    for _index in range(1, 7):
+        MCDU_KEY_SUFFIXES[f"LSK{_index}{_side}"] = f"LSK{_index}{_side}"
+
+
 def _mcdu_segments(mcdu: int, parts: list[str]) -> list[dict[str, str]]:
     segments: list[dict[str, str]] = []
     for part in parts:
@@ -916,6 +949,47 @@ def _mcdu_segments(mcdu: int, parts: list[str]) -> list[dict[str, str]]:
     return segments
 
 
+def _segments_text(segments: list[dict[str, str]]) -> str:
+    return "".join(segment["text"] for segment in segments)
+
+
+def _normalize_lsk(value: str) -> str:
+    normalized = value.upper()
+    if len(normalized) == 2 and normalized[0] in {"L", "R"} and normalized[1] in "123456":
+        return f"LSK{normalized[1]}{normalized[0]}"
+    return normalized
+
+
+def _mcdu_text_to_keys(text: str) -> list[str]:
+    keys: list[str] = []
+    for char in text.upper():
+        if "A" <= char <= "Z" or "0" <= char <= "9":
+            keys.append(char)
+        elif char == ".":
+            keys.append("DOT")
+        elif char == "/":
+            keys.append("SLASH")
+        elif char == " ":
+            keys.append("SP")
+        elif char == "-":
+            keys.append("PLUSMINUS")
+        else:
+            raise ValueError(f"Unsupported MCDU text character: {char!r}")
+    return keys
+
+
+def _mcdu_command(side: Literal["capt", "fo"], key: str) -> str:
+    mcdu = 1 if side == "capt" else 2
+    normalized = _normalize_lsk(key)
+    suffix = MCDU_KEY_SUFFIXES.get(normalized)
+    if suffix is None:
+        raise ValueError(f"Unsupported MCDU key: {key}")
+    command = f"AirbusFBW/MCDU{mcdu}{suffix}"
+    if CATALOG.get(command, {}).get("kind") != "command":
+        raise MappingError(f"MCDU command not found in catalog: {command}")
+    return command
+
+
 @mcp.tool
 def read_ecam(side: Literal["ewd", "sd"]) -> dict[str, Any]:
     """Read ECAM text. Units: decoded ASCII text and color names. side='ewd' or 'sd'. Returns lines with line,color,text and current_sd_page for sd. Example: {'lines': [{'line': 1, 'text': 'APU AVAIL', 'color': 'green'}]}."""
@@ -927,7 +1001,7 @@ def read_ecam(side: Literal["ewd", "sd"]) -> dict[str, Any]:
 
 @mcp.tool
 def read_mcdu(side: Literal["capt", "fo"]) -> dict[str, Any]:
-    """Read MCDU display text only. Units: decoded ASCII, 0-based screen lines, color names. side='capt' for MCDU1 or 'fo' for MCDU2. Returns side and 14 line objects with type and text/color segments. Example: {'side': 'capt', 'lines': [{'line': 0, 'type': 'title', 'segments': [{'text': 'INIT', 'color': 'white'}]}]}."""
+    """Read MCDU display text only. Units: decoded ASCII, 0-based screen lines, color names. side='capt' for MCDU1 or 'fo' for MCDU2. Returns side, 14 line objects with type/text/color segments, and scratchpad text. Example: {'side': 'capt', 'scratchpad': 'ENTER DEST'}."""
     mcdu = 1 if side == "capt" else 2
     lines: list[dict[str, Any]] = [
         {"line": 0, "type": "title", "segments": _mcdu_segments(mcdu, ["title", "stitle"])},
@@ -947,8 +1021,32 @@ def read_mcdu(side: Literal["capt", "fo"]) -> dict[str, Any]:
                 "segments": _mcdu_segments(mcdu, [f"cont{pair}", f"scont{pair}"]),
             }
         )
-    lines.append({"line": 13, "type": "scratchpad", "segments": _mcdu_segments(mcdu, ["sp"])})
-    return {"side": side, "lines": lines}
+    scratchpad_segments = _mcdu_segments(mcdu, ["sp"])
+    lines.append({"line": 13, "type": "scratchpad", "segments": scratchpad_segments})
+    return {"side": side, "lines": lines, "scratchpad": _segments_text(scratchpad_segments)}
+
+
+@mcp.tool
+def mcdu_press(
+    side: Literal["capt", "fo"],
+    keys: list[str] | None = None,
+    text: str | None = None,
+    followup_lsk: str | None = None,
+) -> dict[str, Any]:
+    """Press MCDU keys. Units: command sequence with 50 ms spacing. Provide exactly one of keys or text; text supports A-Z, 0-9, '.', '/', space, '-'. followup_lsk accepts L1-L6 or R1-R6. Returns success, keys_pressed, scratchpad_after. Example: mcdu_press('capt', text='AA1912', followup_lsk='L1')."""
+    if (keys is None) == (text is None):
+        raise ValueError("Specify exactly one of keys or text")
+    sequence = [_normalize_lsk(key.upper()) for key in keys] if keys is not None else _mcdu_text_to_keys(text or "")
+    if followup_lsk:
+        sequence.append(_normalize_lsk(followup_lsk))
+    if not sequence:
+        raise ValueError("MCDU key sequence is empty")
+    commands = [_mcdu_command(side, key) for key in sequence]
+    for command in commands:
+        XP.command(command)
+        time.sleep(0.05)
+    after = read_mcdu(side)
+    return {"success": True, "keys_pressed": sequence, "scratchpad_after": after["scratchpad"], "command_used": commands}
 
 
 @mcp.tool
