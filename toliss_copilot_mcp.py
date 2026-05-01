@@ -93,6 +93,7 @@ STANDARD_DREFS: dict[str, str] = {
     "tcas_mode": "sim/cockpit2/radios/actuators/tcas_sys_select",
     "tcas_filter": "sim/cockpit2/radios/actuators/tcas_filter",
     "instrument_brightness": "sim/cockpit2/electrical/instrument_brightness_ratio",
+    "speedbrake_ratio": "sim/cockpit2/controls/speedbrake_ratio",
 }
 
 STANDARD_COMMANDS: dict[str, str] = {
@@ -622,6 +623,11 @@ def _read_speedbrake_armed() -> bool | None:
     return _bool(XP.read(dref))
 
 
+def _read_speedbrake_raw_ratio() -> float | None:
+    value = _num(_read_std("speedbrake_ratio"))
+    return None if value is None else float(value)
+
+
 def _not_impl(tool: str, missing: list[str]) -> None:
     raise MappingError(f"{tool} is not implemented because catalog mappings are missing: {', '.join(missing)}")
 
@@ -849,11 +855,16 @@ def read_pedestal() -> dict[str, Any]:
         autobrake = "lo"
     else:
         autobrake = "off"
+    speedbrake_raw_ratio = _read_speedbrake_raw_ratio()
     return {
         "flap_handle": flap_handle,
         "flap_actual": flap_actual,
         "slat_actual": slat_actual,
-        "speedbrake": {"handle": d["speedbrake_handle"], "armed": _read_speedbrake_armed()},
+        "speedbrake": {
+            "handle": None if speedbrake_raw_ratio is None else max(speedbrake_raw_ratio, 0.0),
+            "raw_ratio": speedbrake_raw_ratio,
+            "armed": None if speedbrake_raw_ratio is None else speedbrake_raw_ratio < -0.25,
+        },
         "parking_brake": d["parking_brake"],
         "autobrake": autobrake,
         "trim": {"stab": d["trim_stab"], "rudder": d["trim_rudder"]},
@@ -1713,18 +1724,32 @@ def set_pedestal(name: str, value: Any) -> dict[str, Any]:
             current = before["speedbrake"].get("armed")
             if current is None:
                 raise MappingError(
-                    "Cannot set speedbrake armed state idempotently: no speedbrake armed readback dataref is mapped. "
-                    "Use debug_search_xplane_names('speedbrake') or debug_search_xplane_names('spoiler') to discover one."
+                    "Cannot set speedbrake armed state idempotently: no speedbrake armed readback dataref is available."
                 )
             desired = target == "armed"
             if current == desired:
                 return _noop_success(before)
-            if target == "disarmed":
-                raise MappingError(
-                    "Cannot disarm speedbrake idempotently: no verified disarm command mapping exists with armed-state readback."
+            if target == "armed":
+                cmd = _known("toliss_airbus/speedbrake/hold_armed")
+                return _pedestal_target_result(lambda: XP.command(cmd), lambda after: after["speedbrake"].get("armed") is True, commands=[cmd])
+            ratio_dref = STANDARD_DREFS["speedbrake_ratio"]
+            if XP.is_writable(ratio_dref):
+                return _pedestal_target_result(
+                    lambda: XP.write(ratio_dref, 0.0),
+                    lambda after: after["speedbrake"].get("armed") is False,
+                    datarefs=[ratio_dref],
                 )
-            cmd = _known("toliss_airbus/speedbrake/hold_armed")
-            return _pedestal_target_result(lambda: XP.command(cmd), lambda after: after["speedbrake"].get("armed") is desired, commands=[cmd])
+            down_cmd = STANDARD_COMMANDS["speedbrake_down_one"]
+
+            def disarm_speedbrake() -> None:
+                for _ in range(10):
+                    state = read_pedestal()["speedbrake"]
+                    if state.get("armed") is False and (_num(state.get("handle")) or 0.0) <= 0.05:
+                        return
+                    XP.command(down_cmd)
+                    time.sleep(0.1)
+
+            return _pedestal_target_result(disarm_speedbrake, lambda after: after["speedbrake"].get("armed") is False, commands=[down_cmd])
         target = max(0.0, min(1.0, float(value)))
         up_cmd = STANDARD_COMMANDS["speedbrake_up_one"]
         down_cmd = STANDARD_COMMANDS["speedbrake_down_one"]
