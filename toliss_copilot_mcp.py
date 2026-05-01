@@ -95,6 +95,7 @@ STANDARD_DREFS: dict[str, str] = {
     "tcas_filter": "sim/cockpit2/radios/actuators/tcas_filter",
     "instrument_brightness": "sim/cockpit2/electrical/instrument_brightness_ratio",
     "speedbrake_ratio": "sim/cockpit2/controls/speedbrake_ratio",
+    "fcu_heading_dial": "sim/cockpit2/autopilot/heading_dial_deg_mag_pilot",
 }
 
 STANDARD_COMMANDS: dict[str, str] = {
@@ -145,7 +146,7 @@ READ_DREFS: dict[str, dict[str, str]] = {
         {
             "spd_value": "AirbusFBW/APSPD_Capt",
             "spd_managed": "AirbusFBW/SPDmanaged",
-            "hdg_value": "AirbusFBW/HDGCapt",
+            "hdg_value": "AirbusFBW/APHDG_Capt",
             "hdg_managed": "AirbusFBW/HDGmanaged",
             "hdg_mode": "AirbusFBW/HDGTRKmode",
             "alt_value": "AirbusFBW/FCUALT_M",
@@ -662,6 +663,16 @@ def _decode_fcu_heading(value: Any) -> float | None:
     return _normalize_heading(raw_float)
 
 
+def _read_fcu_heading_value() -> float | None:
+    try:
+        return _decode_fcu_heading(XP.read(READ_DREFS["fcu"]["hdg_value"]))
+    except Exception:
+        try:
+            return _normalize_heading(float(_num(_read_std("fcu_heading_dial"))))
+        except Exception:
+            return None
+
+
 def _shortest_heading_delta(current: float, target: float) -> float:
     return (target - current + 540.0) % 360.0 - 180.0
 
@@ -687,115 +698,18 @@ def _fcu_numeric_disabled(channel: str) -> MappingError:
     )
 
 
-def _write_fcu_knob_delta(dref: str, delta: int, max_steps: int, delay: float) -> None:
-    if delta == 0:
-        return
-    XP.write(dref, delta)
-    time.sleep(delay)
-    XP.write(dref, 0)
-    time.sleep(delay)
-
-
-def _set_fcu_by_knob(
-    channel: str,
-    target: float,
-    *,
-    desired_managed: bool,
-    knob_dref: str,
-    command: str,
-    tolerance: float,
-    max_steps: int,
-    delay: float = 0.05,
-) -> dict[str, Any]:
-    before = read_fcu()
-    current = _num(before[channel]["value"])
+def _write_fcu_knob_delta(dref: str, delta_clicks: int) -> tuple[int, int]:
+    """Advance a ToLiss FCU knob counter by signed clicks, wrapping 0..19."""
+    DATAREF_VALUE_CACHE.pop(dref, None)
+    current = _num(XP.read(dref))
     if current is None:
-        raise MappingError(f"set_fcu('{channel}') requires a working readback dataref before knob control can be used.")
-    if channel == "hdg":
-        target = _normalize_heading(target)
-        current = _normalize_heading(float(current))
-    else:
-        current = float(current)
-    command_used: list[str] = []
-    if _bool(before[channel]["managed"]) != desired_managed:
-        XP.command(command)
-        command_used.append(command)
-        time.sleep(0.15)
-        before = read_fcu()
-        current = _num(before[channel]["value"])
-        if current is None:
-            raise MappingError(f"set_fcu('{channel}') requires a working readback dataref before knob control can be used.")
-        current = _normalize_heading(float(current)) if channel == "hdg" else float(current)
-    if _bool(before[channel]["managed"]) == desired_managed and _fcu_value_close(channel, current, target):
-        return _noop_success(before)
-
-    last_snapshot = read_fcu()
-    last_value = _num(last_snapshot[channel]["value"])
-    if last_value is None:
-        raise MappingError(f"set_fcu('{channel}') requires a working readback dataref before knob control can be used.")
-    last_value = _normalize_heading(float(last_value)) if channel == "hdg" else float(last_value)
-    if _fcu_value_close(channel, last_value, target):
-        return {
-            "success": True,
-            "before": before,
-            "after": last_snapshot,
-            "dataref_used": [knob_dref],
-            "command_used": command_used,
-        }
-
-    if channel == "hdg":
-        step = 1 if _shortest_heading_delta(last_value, target) > 0 else -1
-    else:
-        step = 1 if target - last_value > 0 else -1
-
-    for _ in range(max_steps):
-        remaining = _shortest_heading_delta(last_value, target) if channel == "hdg" else target - last_value
-        if abs(remaining) <= tolerance:
-            return {
-                "success": True,
-                "before": before,
-                "after": last_snapshot,
-                "dataref_used": [knob_dref],
-                "command_used": [command] if before[channel]["managed"] else [],
-            }
-        _write_fcu_knob_delta(knob_dref, step, max_steps=1, delay=delay)
-        snapshot = read_fcu()
-        value = _num(snapshot[channel]["value"])
-        if value is None:
-            raise MappingError(f"set_fcu('{channel}') requires a working readback dataref before knob control can be used.")
-        value = _normalize_heading(float(value)) if channel == "hdg" else float(value)
-        if _fcu_value_close(channel, value, target):
-            return {
-                "success": True,
-                "before": before,
-                "after": snapshot,
-                "dataref_used": [knob_dref],
-                "command_used": command_used,
-            }
-        new_remaining = _shortest_heading_delta(value, target) if channel == "hdg" else target - value
-        if abs(new_remaining) >= abs(remaining) - 0.1:
-            trial_step = -step
-            _write_fcu_knob_delta(knob_dref, trial_step, max_steps=1, delay=delay)
-            trial_snapshot = read_fcu()
-            trial_value = _num(trial_snapshot[channel]["value"])
-            if trial_value is None:
-                raise MappingError(f"set_fcu('{channel}') requires a working readback dataref before knob control can be used.")
-            trial_value = _normalize_heading(float(trial_value)) if channel == "hdg" else float(trial_value)
-            trial_remaining = _shortest_heading_delta(trial_value, target) if channel == "hdg" else target - trial_value
-            if abs(trial_remaining) >= abs(remaining) - 0.1:
-                raise MappingError(
-                    f"set_fcu('{channel}') knob rotation did not converge toward target {target}. "
-                    "The readback moved away or stalled in both directions."
-                )
-            step = trial_step
-            snapshot = trial_snapshot
-            value = trial_value
-        last_snapshot = snapshot
-        last_value = value
-
-    raise MappingError(
-        f"set_fcu('{channel}') could not reach target {target} via verified FCU knob rotation within {max_steps} steps."
-    )
+        raise MappingError(f"FCU knob dataref did not return a numeric counter: {dref}")
+    knob_current = int(round(float(current))) % 20
+    knob_next = (knob_current + int(delta_clicks)) % 20
+    if knob_next != knob_current:
+        XP.write(dref, knob_next)
+        DATAREF_VALUE_CACHE.clear()
+    return knob_current, knob_next
 
 
 def _set_fcu_hdg(target: float, desired_managed: bool) -> dict[str, Any]:
@@ -818,50 +732,32 @@ def _set_fcu_hdg(target: float, desired_managed: bool) -> dict[str, Any]:
         current = _normalize_heading(float(current))
     if _bool(before["hdg"]["managed"]) == desired_managed and _fcu_value_close("hdg", current, target):
         return _noop_success(before)
-
-    # In the current ToLiss session, FCUHeadingKnobRotation acts like a
-    # decrement pulse on the FCU window regardless of sign. Drive the selected
-    # heading by wrapping downward until the FCU readback reaches the target.
-    last_remaining = (current - target) % 360.0
-    stagnant = 0
-    last_snapshot = before
-    for _ in range(240):
-        if _fcu_value_close("hdg", current, target):
-            return {
-                "success": True,
-                "before": before,
-                "after": last_snapshot,
-                "dataref_used": [WRITE_DREFS["fcu_hdg_knob"]],
-                "command_used": command_used,
-            }
-        _write_fcu_knob_delta(WRITE_DREFS["fcu_hdg_knob"], 1, max_steps=1, delay=0.05)
-        snapshot = read_fcu()
-        value = _num(snapshot["hdg"]["value"])
-        if value is None:
-            raise MappingError("set_fcu('hdg') lost FCU heading readback during knob rotation.")
-        current = _normalize_heading(float(value))
-        remaining = (current - target) % 360.0
-        if _fcu_value_close("hdg", current, target):
-            return {
-                "success": True,
-                "before": before,
-                "after": snapshot,
-                "dataref_used": [WRITE_DREFS["fcu_hdg_knob"]],
-                "command_used": command_used,
-            }
-        if remaining < last_remaining - 0.1:
-            stagnant = 0
-            last_remaining = remaining
-            last_snapshot = snapshot
-            continue
-        stagnant += 1
-        last_snapshot = snapshot
-        if stagnant >= 6:
-            raise MappingError(
-                "set_fcu('hdg') did not get a monotonic FCU heading readback from FCUHeadingKnobRotation. "
-                "The FCU window stalled before reaching the requested target."
-            )
-    raise MappingError("set_fcu('hdg') exceeded the safe knob pulse limit before reaching the requested target.")
+    heading_dial_dref = STANDARD_DREFS["fcu_heading_dial"]
+    dial_value = _num(XP.read(heading_dial_dref))
+    if dial_value is None:
+        raise MappingError("set_fcu('hdg') requires a working X-Plane FCU heading dial readback.")
+    dial_value = _normalize_heading(float(dial_value))
+    display_offset = _shortest_heading_delta(dial_value, current)
+    dial_target = _normalize_heading(target - display_offset)
+    XP.write(heading_dial_dref, dial_target)
+    time.sleep(0.25)
+    after = read_fcu()
+    actual = _num(after["hdg"]["value"])
+    actual = None if actual is None else _normalize_heading(float(actual))
+    if _fcu_value_close("hdg", actual, target):
+        result = {
+            "success": True,
+            "before": before,
+            "after": after,
+            "dataref_used": [heading_dial_dref],
+            "command_used": command_used,
+        }
+        result["heading_dial"] = {"before": dial_value, "after": dial_target, "display_offset": display_offset}
+        return result
+    raise MappingError(
+        f"set_fcu('hdg') wrote {dial_target} to {heading_dial_dref} "
+        f"but readback was {actual}, not target {target}."
+    )
 
 
 def _not_impl(tool: str, missing: list[str]) -> None:
@@ -1008,7 +904,7 @@ def read_flight_state() -> dict[str, Any]:
 def read_fcu() -> dict[str, Any]:
     """Read FCU selected/managed targets. Units: kt/Mach as displayed, degrees, ft, fpm. Returns spd, hdg, alt, vs, metric_alt. Example: {'spd': {'value': 250, 'managed': False}}."""
     d = _read_map(READ_DREFS["fcu"])
-    hdg_value = _decode_fcu_heading(d["hdg_value"])
+    hdg_value = _read_fcu_heading_value()
     return {
         "spd": {"value": d["spd_value"], "managed": _bool(d["spd_managed"])},
         "hdg": {"value": hdg_value, "managed": _bool(d["hdg_managed"]), "mode": "trk" if _bool(d["hdg_mode"]) else "hdg"},
@@ -1710,11 +1606,7 @@ def debug_search_xplane_names(term: str) -> dict[str, Any]:
 def set_fcu(channel: Literal["spd", "hdg", "alt", "vs"], value: float, managed: bool) -> dict[str, Any]:
     """Set FCU channel. Units: spd kt/Mach raw, hdg deg, alt ft, vs fpm. managed=True pushes, False pulls, then writes value. Returns success,before,after,dataref_used. Example: set_fcu('spd', 250, False)."""
     if channel == "hdg":
-        raise MappingError(
-            "set_fcu('hdg') numeric target is disabled because FCUHeadingKnobRotation did not produce a monotonic, "
-            "verifiable FCU window readback in the current manual-flight ToLiss session. "
-            "A verified ToLiss control path is required before this setter can be safely enabled."
-        )
+        return _set_fcu_hdg(float(value), managed)
     if channel == "spd":
         raise _fcu_numeric_disabled("spd")
     if channel == "vs":
